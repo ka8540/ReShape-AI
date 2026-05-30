@@ -545,19 +545,21 @@ class AppBottomTabs extends ConsumerWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Container(
-                    width: 54,
-                    height: 54,
-                    margin: const EdgeInsets.only(top: -18),
-                    decoration: BoxDecoration(
-                      color: AppColors.teal,
-                      borderRadius: BorderRadius.circular(18),
-                      boxShadow: AppShadows.teal,
-                    ),
-                    child: const Icon(
-                      Icons.add_rounded,
-                      color: Colors.white,
-                      size: 30,
+                  Transform.translate(
+                    offset: const Offset(0, -18),
+                    child: Container(
+                      width: 54,
+                      height: 54,
+                      decoration: BoxDecoration(
+                        color: AppColors.teal,
+                        borderRadius: BorderRadius.circular(18),
+                        boxShadow: AppShadows.teal,
+                      ),
+                      child: const Icon(
+                        Icons.add_rounded,
+                        color: Colors.white,
+                        size: 30,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 2),
