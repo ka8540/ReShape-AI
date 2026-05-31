@@ -3723,6 +3723,13 @@ class _NewProjectCta extends StatelessWidget {
 class _RemoteProjectsList extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final auth = ref.watch(appAuthControllerProvider);
+    if (auth.status != AppAuthStatus.authenticated) {
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+        children: const [_SignInRequiredCard()],
+      );
+    }
     final async = ref.watch(remoteProjectsProvider);
     return async.when(
       loading: () => const Center(
@@ -3732,8 +3739,13 @@ class _RemoteProjectsList extends ConsumerWidget {
         ),
       ),
       error: (e, _) {
-        final unauthorized =
-            e is ApiException && e.isUnauthorized;
+        final unauthorized = e is ApiException && e.isUnauthorized;
+        if (unauthorized) {
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: const [_SignInRequiredCard()],
+          );
+        }
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
@@ -3743,9 +3755,7 @@ class _RemoteProjectsList extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    unauthorized
-                        ? 'Please sign in again'
-                        : 'Could not load projects',
+                    'Could not load projects',
                     style: AppText.h3(color: AppColors.danger),
                   ),
                   const SizedBox(height: 6),
@@ -3855,6 +3865,10 @@ class _HomeRecentRemoteProjects extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final auth = ref.watch(appAuthControllerProvider);
+    if (auth.status != AppAuthStatus.authenticated) {
+      return const _SignInRequiredCard();
+    }
     final async = ref.watch(remoteProjectsProvider);
     return async.when(
       loading: () => const Padding(
@@ -3863,13 +3877,14 @@ class _HomeRecentRemoteProjects extends ConsumerWidget {
       ),
       error: (e, _) {
         final unauthorized = e is ApiException && e.isUnauthorized;
+        if (unauthorized) return const _SignInRequiredCard();
         return RsCard(
           padding: const EdgeInsets.all(18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                unauthorized ? 'Please sign in again' : 'Backend not reachable',
+                'Backend error',
                 style: AppText.h3(color: AppColors.danger),
               ),
               const SizedBox(height: 6),
@@ -3924,6 +3939,47 @@ class _HomeRecentRemoteProjects extends ConsumerWidget {
           ],
         );
       },
+    );
+  }
+}
+
+class _SignInRequiredCard extends ConsumerWidget {
+  const _SignInRequiredCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final firebaseOn = ref.read(appAuthControllerProvider).status !=
+        AppAuthStatus.guest;
+    return RsCard(
+      padding: const EdgeInsets.fromLTRB(20, 22, 20, 22),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.lock_outline_rounded, color: AppColors.teal),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('Sign in to view your projects', style: AppText.h3()),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            firebaseOn
+                ? 'Your projects live on the backend. Sign in with Google to load them.'
+                : 'Authentication is currently disabled in this build. Re-run with --dart-define=ENABLE_FIREBASE=true and configure Firebase to sign in.',
+            style: AppText.sm(),
+          ),
+          const SizedBox(height: 14),
+          if (firebaseOn)
+            RsButton(
+              label: 'Sign in with Google',
+              icon: Icons.login_rounded,
+              onPressed: () => context.go('/login'),
+            ),
+        ],
+      ),
     );
   }
 }
