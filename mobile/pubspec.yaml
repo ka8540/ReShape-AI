@@ -1,0 +1,44 @@
+name: respace_ai
+description: "ReSpace AI — mobile MVP. AI-powered room reshuffle and redesign."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # state
+  flutter_riverpod: ^2.5.1
+
+  # navigation
+  go_router: ^14.6.2
+
+  # networking (future API client)
+  dio: ^5.7.0
+
+  # storage
+  flutter_secure_storage: ^9.2.2
+  shared_preferences: ^2.3.3
+
+  # media
+  image_picker: ^1.1.2
+  camera: ^0.11.0+2
+  video_player: ^2.9.2
+
+  # images
+  cached_network_image: ^3.4.1
+
+  # fonts
+  google_fonts: ^6.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
