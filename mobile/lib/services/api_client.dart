@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'api_config.dart';
@@ -15,9 +16,17 @@ final apiClientProvider = Provider<Dio>((ref) {
   dio.interceptors.add(
     InterceptorsWrapper(
       onRequest: (options, handler) async {
-        final token = await ref.read(authServiceProvider).currentIdToken();
-        if (token != null) {
-          options.headers['Authorization'] = 'Bearer $token';
+        // Belt + suspenders: even if AuthService throws (e.g. Firebase plugin
+        // not initialised on this build), the request still goes through
+        // without an Authorization header rather than crashing the isolate.
+        try {
+          final auth = ref.read(authServiceProvider);
+          final token = await auth.currentIdToken();
+          if (token != null) {
+            options.headers['Authorization'] = 'Bearer $token';
+          }
+        } catch (e) {
+          debugPrint('Skipping auth token (Firebase not ready): $e');
         }
         handler.next(options);
       },
@@ -25,7 +34,9 @@ final apiClientProvider = Provider<Dio>((ref) {
         if (err.response?.statusCode == 401) {
           // Token expired/invalid → surface as auth failure for the UI to
           // route the user back to login. We don't auto-retry here.
-          ref.read(authServiceProvider).markUnauthenticated();
+          try {
+            ref.read(authServiceProvider).markUnauthenticated();
+          } catch (_) {}
         }
         handler.next(err);
       },
