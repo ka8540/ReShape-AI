@@ -20,6 +20,11 @@ dependencies:
   # networking (future API client)
   dio: ^5.7.0
 
+  # auth (Firebase + Google OAuth)
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.1
+  google_sign_in: ^6.2.1
+
   # storage
   flutter_secure_storage: ^9.2.2
   shared_preferences: ^2.3.3
