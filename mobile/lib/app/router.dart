@@ -4,7 +4,6 @@ import 'package:go_router/go_router.dart';
 
 import '../screens/login_screen.dart';
 import '../screens/screens.dart';
-import '../services/api_config.dart';
 import '../state/auth_state.dart';
 import '../widgets/design_system.dart';
 
@@ -15,18 +14,18 @@ final routerProvider = Provider<GoRouter>((ref) {
   final auth = ref.watch(appAuthControllerProvider);
 
   return GoRouter(
-    initialLocation: '/',
+    initialLocation: '/login',
     navigatorKey: _rootNavigatorKey,
     redirect: (context, state) {
-      if (!enableFirebase) return null; // mock-data design build
+      // Auth gate is ALWAYS on. The only public route is /login (which itself
+      // tells the user when Firebase isn't configured).
       final loggingIn = state.matchedLocation == '/login';
       switch (auth.status) {
         case AppAuthStatus.booting:
-          return loggingIn ? null : '/login';
         case AppAuthStatus.unauthenticated:
+        case AppAuthStatus.guest:
           return loggingIn ? null : '/login';
         case AppAuthStatus.authenticated:
-        case AppAuthStatus.guest:
           return loggingIn ? '/home' : null;
       }
     },

@@ -42,11 +42,14 @@ class AppAuthState {
 }
 
 class AppAuthController extends StateNotifier<AppAuthState> {
+  // The app always starts unauthenticated. Even with Firebase disabled we do
+  // *not* fall through to a guest state — the user must complete the login
+  // screen (or see the Firebase-not-configured instructions there).
   AppAuthController(this._ref)
     : super(
         enableFirebase
             ? const AppAuthState(status: AppAuthStatus.booting)
-            : const AppAuthState(status: AppAuthStatus.guest),
+            : const AppAuthState(status: AppAuthStatus.unauthenticated),
       ) {
     if (enableFirebase) _listen();
   }
@@ -84,12 +87,6 @@ class AppAuthController extends StateNotifier<AppAuthState> {
         );
       }
     }, fireImmediately: true);
-  }
-
-  /// Lets the user continue without Firebase (useful for the mock-data
-  /// design-pass build).
-  void continueAsGuest() {
-    state = const AppAuthState(status: AppAuthStatus.guest);
   }
 
   Future<void> signOut() async {

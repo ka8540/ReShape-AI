@@ -50,14 +50,7 @@ class AuthService {
   }
 
   Future<UserCredential?> signInWithGoogle() async {
-    final auth = _firebaseAuth;
-    if (auth == null) {
-      throw StateError(
-        'Firebase is not initialised. Run with '
-        '--dart-define=ENABLE_FIREBASE=true and ensure the GoogleService '
-        'config files are in place.',
-      );
-    }
+    final auth = _requireAuth();
     final account = await _googleSignIn.signIn();
     if (account == null) return null;
     final googleAuth = await account.authentication;
@@ -66,6 +59,56 @@ class AuthService {
       idToken: googleAuth.idToken,
     );
     return auth.signInWithCredential(credential);
+  }
+
+  Future<UserCredential> signInWithEmail({
+    required String email,
+    required String password,
+  }) {
+    final auth = _requireAuth();
+    return auth.signInWithEmailAndPassword(
+      email: email.trim(),
+      password: password,
+    );
+  }
+
+  Future<UserCredential> signUpWithEmail({
+    required String email,
+    required String password,
+    String? displayName,
+  }) async {
+    final auth = _requireAuth();
+    final credential = await auth.createUserWithEmailAndPassword(
+      email: email.trim(),
+      password: password,
+    );
+    final name = displayName?.trim();
+    if (name != null && name.isNotEmpty) {
+      try {
+        await credential.user?.updateDisplayName(name);
+        await credential.user?.reload();
+      } catch (e) {
+        debugPrint('updateDisplayName failed: $e');
+      }
+    }
+    return credential;
+  }
+
+  Future<void> sendPasswordReset(String email) {
+    final auth = _requireAuth();
+    return auth.sendPasswordResetEmail(email: email.trim());
+  }
+
+  FirebaseAuth _requireAuth() {
+    final auth = _firebaseAuth;
+    if (auth == null) {
+      throw StateError(
+        'Firebase is not initialised. Run with '
+        '--dart-define=ENABLE_FIREBASE=true and ensure the GoogleService '
+        'config files are in place.',
+      );
+    }
+    return auth;
   }
 
   Future<void> signOut() async {

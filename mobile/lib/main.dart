@@ -13,17 +13,25 @@ void main() async {
       statusBarIconBrightness: Brightness.dark,
     ),
   );
-  // Best-effort: failures are logged and the app keeps booting so the
-  // design-pass build still runs without Firebase config files.
-  await bootstrapFirebase();
-  runApp(const ReSpaceBootstrap());
+  // Initialise Firebase before any provider can read FirebaseAuth.
+  // Failures are surfaced through `firebaseStatusProvider` so the login
+  // screen can show setup instructions instead of crashing the app.
+  final firebase = await bootstrapFirebase();
+  runApp(ReSpaceBootstrap(firebase: firebase));
 }
 
 class ReSpaceBootstrap extends StatelessWidget {
-  const ReSpaceBootstrap({super.key});
+  const ReSpaceBootstrap({super.key, required this.firebase});
+
+  final FirebaseBootstrapResult firebase;
 
   @override
   Widget build(BuildContext context) {
-    return const ProviderScope(child: ReSpaceApp());
+    return ProviderScope(
+      overrides: [
+        firebaseStatusProvider.overrideWith((ref) => firebase),
+      ],
+      child: const ReSpaceApp(),
+    );
   }
 }

@@ -705,7 +705,7 @@ class ProfileScreen extends ConsumerWidget {
             onPressed: () async {
               await ref.read(appAuthControllerProvider.notifier).signOut();
               if (!context.mounted) return;
-              context.go(enableFirebase ? '/login' : '/');
+              context.go('/login');
             },
           ),
         ],
@@ -3943,13 +3943,14 @@ class _HomeRecentRemoteProjects extends ConsumerWidget {
   }
 }
 
-class _SignInRequiredCard extends ConsumerWidget {
+class _SignInRequiredCard extends StatelessWidget {
   const _SignInRequiredCard();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final firebaseOn = ref.read(appAuthControllerProvider).status !=
-        AppAuthStatus.guest;
+  Widget build(BuildContext context) {
+    // Reachable only if the auth gate has a bug — under normal flow the
+    // router redirects unauthenticated users to /login before any screen
+    // backed by /projects gets built. Kept as a safety net.
     return RsCard(
       padding: const EdgeInsets.fromLTRB(20, 22, 20, 22),
       child: Column(
@@ -3966,18 +3967,15 @@ class _SignInRequiredCard extends ConsumerWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            firebaseOn
-                ? 'Your projects live on the backend. Sign in with Google to load them.'
-                : 'Authentication is currently disabled in this build. Re-run with --dart-define=ENABLE_FIREBASE=true and configure Firebase to sign in.',
+            'Your projects live on the backend. Sign in to load them.',
             style: AppText.sm(),
           ),
           const SizedBox(height: 14),
-          if (firebaseOn)
-            RsButton(
-              label: 'Sign in with Google',
-              icon: Icons.login_rounded,
-              onPressed: () => context.go('/login'),
-            ),
+          RsButton(
+            label: 'Sign in',
+            icon: Icons.login_rounded,
+            onPressed: () => context.go('/login'),
+          ),
         ],
       ),
     );
