@@ -14,38 +14,55 @@ class Settings(BaseSettings):
 
     APP_ENV: str = "local"
 
-    # Gemini image generation. Model names are environment-driven so Google's
-    # rolling Gemini image releases never require a code change.
-    GEMINI_API_KEY: str = Field(..., description="Google AI Studio API key.")
+    # Firebase Authentication (verified server-side).
+    FIREBASE_PROJECT_ID: str = ""
+    FIREBASE_CREDENTIALS_PATH: str = "./firebase-service-account.json"
+
+    # Gemini image generation — env-driven so Google's rolling releases never
+    # require a code change.
+    GEMINI_API_KEY: str = Field(default="", description="Google AI Studio API key.")
     GEMINI_IMAGE_MODEL: str = "gemini-3.1-flash-image-preview"
     GEMINI_IMAGE_FALLBACK_MODEL: str = "gemini-3-pro-image-preview"
     GEMINI_IMAGE_LEGACY_MODEL: str = "gemini-2.5-flash-image"
 
     # Cloudflare R2 (private bucket; backend issues signed URLs).
-    R2_ACCOUNT_ID: str
-    R2_ACCESS_KEY_ID: str
-    R2_SECRET_ACCESS_KEY: str
+    R2_ACCOUNT_ID: str = ""
+    R2_ACCESS_KEY_ID: str = ""
+    R2_SECRET_ACCESS_KEY: str = ""
     R2_BUCKET_NAME: str = "respace-media"
-    R2_ENDPOINT_URL: str
+    R2_ENDPOINT_URL: str = ""
 
-    DATABASE_URL: str
+    DATABASE_URL: str = "sqlite:///./respace.db"
     REDIS_URL: str = "redis://localhost:6379/0"
+
+    # Upload limits.
+    MAX_IMAGE_BYTES: int = 15 * 1024 * 1024
+    MAX_VIDEO_BYTES: int = 250 * 1024 * 1024
+    ALLOWED_IMAGE_MIME: tuple[str, ...] = (
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/heic",
+    )
+    ALLOWED_VIDEO_MIME: tuple[str, ...] = (
+        "video/mp4",
+        "video/quicktime",
+    )
 
     @property
     def gemini_image_model_chain(self) -> list[str]:
-        """Ordered list of models to try, with duplicates removed."""
         ordered = [
             self.GEMINI_IMAGE_MODEL,
             self.GEMINI_IMAGE_FALLBACK_MODEL,
             self.GEMINI_IMAGE_LEGACY_MODEL,
         ]
         seen: set[str] = set()
-        chain: list[str] = []
+        out: list[str] = []
         for name in ordered:
             if name and name not in seen:
                 seen.add(name)
-                chain.append(name)
-        return chain
+                out.append(name)
+        return out
 
 
 @lru_cache(maxsize=1)

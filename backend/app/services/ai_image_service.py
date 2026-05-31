@@ -11,15 +11,16 @@ import logging
 from dataclasses import dataclass
 from typing import Iterable
 
-from google import genai
-from google.genai import errors as genai_errors
-
 from app.core.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
-# Errors that mean "try the next model in the chain" rather than "give up".
-_RETRYABLE_STATUS = {"NOT_FOUND", "PERMISSION_DENIED", "UNIMPLEMENTED", "FAILED_PRECONDITION"}
+_RETRYABLE_STATUS = {
+    "NOT_FOUND",
+    "PERMISSION_DENIED",
+    "UNIMPLEMENTED",
+    "FAILED_PRECONDITION",
+}
 _RETRYABLE_HTTP = {403, 404, 501}
 
 
@@ -35,13 +36,21 @@ class ImageGenerationResult:
 class ImageGenerationFailure:
     error_code: str
     error_message: str
-    attempts: list[tuple[str, str]]  # (model_name, error_message)
+    attempts: list[tuple[str, str]]
 
 
 class AiImageService:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
+        self._client = None
+
+    def _ensure_client(self):
+        if self._client is not None:
+            return self._client
+        from google import genai  # imported lazily so the app boots without it
+
         self._client = genai.Client(api_key=self._settings.GEMINI_API_KEY)
+        return self._client
 
     def generate(
         self,
@@ -53,6 +62,16 @@ class AiImageService:
     ) -> ImageGenerationResult | ImageGenerationFailure:
         chain = self._settings.gemini_image_model_chain
         attempts: list[tuple[str, str]] = []
+
+        try:
+            from google.genai import errors as genai_errors
+        except ImportError as exc:
+            logger.error("google-genai not installed: %s", exc)
+            return ImageGenerationFailure(
+                error_code="SDK_UNAVAILABLE",
+                error_message=str(exc),
+                attempts=[],
+            )
 
         for model_name in chain:
             try:
@@ -114,6 +133,9 @@ class AiImageService:
         reference_image_bytes: bytes | None,
         reference_image_mime: str | None,
     ) -> tuple[bytes, str] | None:
+        from google import genai
+
+        client = self._ensure_client()
         contents: list[object] = [prompt]
         if reference_image_bytes is not None:
             contents.append(
@@ -122,11 +144,7 @@ class AiImageService:
                     mime_type=reference_image_mime or "image/jpeg",
                 )
             )
-
-        response = self._client.models.generate_content(
-            model=model_name,
-            contents=contents,
-        )
+        response = client.models.generate_content(model=model_name, contents=contents)
         return self._extract_image(response)
 
     @staticmethod
@@ -141,7 +159,7 @@ class AiImageService:
         return None
 
     @staticmethod
-    def _is_retryable(exc: genai_errors.APIError) -> bool:
+    def _is_retryable(exc) -> bool:
         status = AiImageService._status_of(exc)
         if status in _RETRYABLE_STATUS:
             return True
@@ -149,5 +167,5 @@ class AiImageService:
         return code in _RETRYABLE_HTTP
 
     @staticmethod
-    def _status_of(exc: genai_errors.APIError) -> str | None:
+    def _status_of(exc) -> str | None:
         return getattr(exc, "status", None) or getattr(exc, "reason", None)

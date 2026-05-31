@@ -1,1 +1,24 @@
 .DS_Store
+
+# Secrets
+.env
+.env.local
+.env.production
+*.pem
+*.key
+backend/.env
+backend/firebase-service-account.json
+firebase-service-account.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+backend/respace.db
+backend/*.sqlite
+backend/*.sqlite3
+
+# Harness state
+.claude/scheduled_tasks.lock
