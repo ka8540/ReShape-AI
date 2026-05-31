@@ -1,21 +1,56 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../screens/screens.dart';
+import '../widgets/design_system.dart';
+
+final _rootNavigatorKey = GlobalKey<NavigatorState>();
 
 final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     initialLocation: '/',
+    navigatorKey: _rootNavigatorKey,
     routes: [
-      GoRoute(path: '/', builder: (context, state) => const WelcomeScreen()),
-      GoRoute(path: '/home', builder: (context, state) => const HomeScreen()),
       GoRoute(
-        path: '/saved',
-        builder: (context, state) => const SavedProjectsScreen(),
+        path: '/',
+        pageBuilder: (context, state) =>
+            const NoTransitionPage(child: WelcomeScreen()),
       ),
-      GoRoute(
-        path: '/profile',
-        builder: (context, state) => const ProfileScreen(),
+      StatefulShellRoute.indexedStack(
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (context, state, navigationShell) {
+          return MainTabsShell(navigationShell: navigationShell);
+        },
+        branches: [
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/home',
+                pageBuilder: (context, state) =>
+                    const NoTransitionPage(child: HomeScreen()),
+              ),
+            ],
+          ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/saved',
+                pageBuilder: (context, state) =>
+                    const NoTransitionPage(child: SavedProjectsScreen()),
+              ),
+            ],
+          ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/profile',
+                pageBuilder: (context, state) =>
+                    const NoTransitionPage(child: ProfileScreen()),
+              ),
+            ],
+          ),
+        ],
       ),
       GoRoute(
         path: '/mode',

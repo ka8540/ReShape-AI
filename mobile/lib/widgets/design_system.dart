@@ -502,19 +502,35 @@ class BottomBar extends StatelessWidget {
   }
 }
 
-class AppBottomTabs extends ConsumerWidget {
-  const AppBottomTabs({super.key, required this.current});
+class MainTabsShell extends StatelessWidget {
+  const MainTabsShell({super.key, required this.navigationShell});
 
-  final String current;
+  final StatefulNavigationShell navigationShell;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.bg,
+      body: navigationShell,
+      bottomNavigationBar: AppBottomTabs(navigationShell: navigationShell),
+    );
+  }
+}
+
+class AppBottomTabs extends ConsumerWidget {
+  const AppBottomTabs({super.key, this.navigationShell});
+
+  final StatefulNavigationShell? navigationShell;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final items = [
-      ('home', 'Home', Icons.home_rounded, '/home'),
-      ('saved', 'Saved', Icons.folder_rounded, '/saved'),
-      ('explore', 'Explore', Icons.auto_awesome_rounded, '/home'),
-      ('profile', 'Profile', Icons.person_rounded, '/profile'),
+      (0, 'Home', Icons.home_rounded),
+      (1, 'Saved', Icons.folder_rounded),
+      (0, 'Explore', Icons.auto_awesome_rounded),
+      (2, 'Profile', Icons.person_rounded),
     ];
+    final currentIndex = navigationShell?.currentIndex;
     return Container(
       padding: EdgeInsets.fromLTRB(
         8,
@@ -529,10 +545,20 @@ class AppBottomTabs extends ConsumerWidget {
       child: Row(
         children: [
           Expanded(
-            child: _TabButton(item: items[0], current: current),
+            child: _TabButton(
+              label: items[0].$2,
+              icon: items[0].$3,
+              selected: currentIndex == items[0].$1,
+              onTap: () => _goBranch(context, items[0].$1),
+            ),
           ),
           Expanded(
-            child: _TabButton(item: items[1], current: current),
+            child: _TabButton(
+              label: items[1].$2,
+              icon: items[1].$3,
+              selected: currentIndex == items[1].$1,
+              onTap: () => _goBranch(context, items[1].$1),
+            ),
           ),
           Expanded(
             child: GestureDetector(
@@ -568,41 +594,70 @@ class AppBottomTabs extends ConsumerWidget {
             ),
           ),
           Expanded(
-            child: _TabButton(item: items[2], current: current),
+            child: _TabButton(
+              label: items[2].$2,
+              icon: items[2].$3,
+              selected: false,
+              onTap: () => _goBranch(context, items[2].$1),
+            ),
           ),
           Expanded(
-            child: _TabButton(item: items[3], current: current),
+            child: _TabButton(
+              label: items[3].$2,
+              icon: items[3].$3,
+              selected: currentIndex == items[3].$1,
+              onTap: () => _goBranch(context, items[3].$1),
+            ),
           ),
         ],
       ),
     );
   }
+
+  void _goBranch(BuildContext context, int index) {
+    final shell = navigationShell;
+    if (shell != null) {
+      shell.goBranch(index, initialLocation: index == shell.currentIndex);
+      return;
+    }
+    const routes = ['/home', '/saved', '/home', '/profile'];
+    context.go(routes[index.clamp(0, routes.length - 1)]);
+  }
 }
 
 class _TabButton extends StatelessWidget {
-  const _TabButton({required this.item, required this.current});
+  const _TabButton({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
 
-  final (String, String, IconData, String) item;
-  final String current;
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final (id, label, icon, route) = item;
-    final on = id == current;
     return InkWell(
       borderRadius: BorderRadius.circular(AppRadii.r),
-      onTap: () => context.go(route),
+      onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 23, color: on ? AppColors.teal : AppColors.ink3),
+            Icon(
+              icon,
+              size: 23,
+              color: selected ? AppColors.teal : AppColors.ink3,
+            ),
             const SizedBox(height: 3),
             Text(
               label,
               style: AppText.xs(
-                color: on ? AppColors.teal : AppColors.ink3,
+                color: selected ? AppColors.teal : AppColors.ink3,
                 weight: FontWeight.w700,
               ),
             ),

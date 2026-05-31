@@ -182,7 +182,6 @@ class HomeScreen extends ConsumerWidget {
     final project = ref.watch(projectControllerProvider);
     final controller = ref.read(projectControllerProvider.notifier);
     return PageShell(
-      bottom: const AppBottomTabs(current: 'home'),
       child: Column(
         children: [
           Padding(
@@ -492,7 +491,6 @@ class SavedProjectsScreen extends StatelessWidget {
       builder: (context, ref, _) {
         final project = ref.watch(projectControllerProvider);
         return PageShell(
-          bottom: const AppBottomTabs(current: 'saved'),
           child: Column(
             children: [
               Padding(
@@ -570,7 +568,6 @@ class ProfileScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return PageShell(
-      bottom: const AppBottomTabs(current: 'profile'),
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
