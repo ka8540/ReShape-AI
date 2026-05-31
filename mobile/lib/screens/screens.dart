@@ -222,6 +222,11 @@ class HomeScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final project = ref.watch(projectControllerProvider);
     final controller = ref.read(projectControllerProvider.notifier);
+    final auth = ref.watch(appAuthControllerProvider);
+    final displayName =
+        auth.localUser?['display_name']?.toString() ??
+        auth.firebaseUser?.displayName ??
+        'Welcome';
     return PageShell(
       child: Column(
         children: [
@@ -235,8 +240,12 @@ class HomeScreen extends ConsumerWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Good evening', style: AppText.xs()),
-                      Text('Maya', style: AppText.h3().copyWith(fontSize: 16)),
+                      Text('Signed in as', style: AppText.xs()),
+                      Text(
+                        displayName,
+                        style: AppText.h3().copyWith(fontSize: 16),
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ],
                   ),
                 ),
@@ -356,24 +365,18 @@ class HomeScreen extends ConsumerWidget {
                     ],
                   ),
                 ),
-                if (project.emptyState)
-                  _EmptyProjects(onStart: () => context.go('/mode'))
-                else
-                  for (final saved in project.saved) ...[
-                    ProjectCard(project: saved),
-                    const SizedBox(height: 11),
-                  ],
-                Center(
-                  child: RsButton(
-                    label:
-                        'Preview ${project.emptyState ? 'populated' : 'empty'} state',
-                    icon: Icons.refresh_rounded,
-                    variant: RsButtonVariant.quiet,
-                    compact: true,
-                    expand: false,
-                    onPressed: controller.toggleEmpty,
+                if (useMockData) ...[
+                  if (project.emptyState)
+                    _EmptyProjects(onStart: () => context.go('/mode'))
+                  else
+                    for (final saved in project.saved) ...[
+                      ProjectCard(project: saved),
+                      const SizedBox(height: 11),
+                    ],
+                ] else
+                  _HomeRecentRemoteProjects(
+                    onStart: () => _startNewProject(context, ref, controller),
                   ),
-                ),
               ],
             ),
           ),
@@ -593,6 +596,16 @@ class ProfileScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final auth = ref.watch(appAuthControllerProvider);
+    final localUser = auth.localUser;
+    final name = localUser?['display_name']?.toString() ??
+        auth.firebaseUser?.displayName ??
+        'Not signed in';
+    final email = localUser?['email']?.toString() ??
+        auth.firebaseUser?.email ??
+        '';
+    final role = localUser?['role']?.toString() ?? 'guest';
+    final initial = name.isNotEmpty ? name.characters.first.toUpperCase() : '?';
     return PageShell(
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -611,7 +624,7 @@ class ProfileScreen extends ConsumerWidget {
                     shape: BoxShape.circle,
                   ),
                   child: Center(
-                    child: Text('M', style: AppText.h2(color: Colors.white)),
+                    child: Text(initial, style: AppText.h2(color: Colors.white)),
                   ),
                 ),
                 const SizedBox(width: 14),
@@ -619,9 +632,13 @@ class ProfileScreen extends ConsumerWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Maya Chen', style: AppText.h3()),
+                      Text(name, style: AppText.h3()),
                       const SizedBox(height: 2),
-                      Text('maya@email.com - Free plan', style: AppText.xs()),
+                      Text(
+                        email.isEmpty ? role : '$email • $role',
+                        style: AppText.xs(),
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ],
                   ),
                 ),
@@ -3827,6 +3844,86 @@ class _RemoteProjectCard extends StatelessWidget {
           const Icon(Icons.chevron_right_rounded, color: AppColors.ink3),
         ],
       ),
+    );
+  }
+}
+
+class _HomeRecentRemoteProjects extends ConsumerWidget {
+  const _HomeRecentRemoteProjects({required this.onStart});
+
+  final VoidCallback onStart;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final async = ref.watch(remoteProjectsProvider);
+    return async.when(
+      loading: () => const Padding(
+        padding: EdgeInsets.symmetric(vertical: 24),
+        child: Center(child: CircularProgressIndicator(color: AppColors.teal)),
+      ),
+      error: (e, _) {
+        final unauthorized = e is ApiException && e.isUnauthorized;
+        return RsCard(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                unauthorized ? 'Please sign in again' : 'Backend not reachable',
+                style: AppText.h3(color: AppColors.danger),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                e is ApiException ? e.message : e.toString(),
+                style: AppText.xs(),
+              ),
+              const SizedBox(height: 12),
+              RsButton(
+                label: 'Retry',
+                icon: Icons.refresh_rounded,
+                variant: RsButtonVariant.soft,
+                compact: true,
+                expand: false,
+                onPressed: () => ref.invalidate(remoteProjectsProvider),
+              ),
+            ],
+          ),
+        );
+      },
+      data: (rows) {
+        if (rows.isEmpty) {
+          return RsCard(
+            padding: const EdgeInsets.fromLTRB(22, 26, 22, 26),
+            child: Column(
+              children: [
+                Text('No projects yet', style: AppText.h3()),
+                const SizedBox(height: 4),
+                Text(
+                  'Start your first reshuffle to see it here.',
+                  style: AppText.sm(),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 14),
+                RsButton(
+                  label: 'Start a project',
+                  variant: RsButtonVariant.soft,
+                  compact: true,
+                  expand: false,
+                  onPressed: onStart,
+                ),
+              ],
+            ),
+          );
+        }
+        return Column(
+          children: [
+            for (final row in rows.take(3)) ...[
+              _RemoteProjectCard(row: row),
+              const SizedBox(height: 11),
+            ],
+          ],
+        );
+      },
     );
   }
 }

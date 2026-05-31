@@ -1,7 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/mock_data.dart';
+import '../data/mock_data.dart' show seedItems, savedProjects;
 import '../data/models.dart';
+import '../services/api_config.dart';
 
 enum AppMode { reshuffle, redesign }
 
@@ -31,8 +32,8 @@ class ProjectState {
     this.selectedLayout = 0,
     this.resultsView = 'grid',
     this.savedLayoutIds = const {},
-    this.saved = savedProjects,
-    this.emptyState = false,
+    this.saved = const [],
+    this.emptyState = true,
     this.modNote,
     this.remoteProjectId,
   });
@@ -69,7 +70,17 @@ class ProjectState {
 }
 
 class ProjectController extends StateNotifier<ProjectState> {
-  ProjectController() : super(ProjectState(items: List.from(seedItems)));
+  ProjectController()
+    : super(
+        ProjectState(
+          // Only seed mock data when the design-pass flag is on. In normal
+          // operation the app starts blank and only shows whatever the
+          // backend returns.
+          items: useMockData ? List.from(seedItems) : <DetectedItem>[],
+          saved: useMockData ? savedProjects : const [],
+          emptyState: !useMockData,
+        ),
+      );
 
   void setMode(AppMode m) => state = state.copyWith(mode: m);
   void setRoomType(String roomType) =>
@@ -127,8 +138,10 @@ class ProjectController extends StateNotifier<ProjectState> {
   void setDifficulty(String d) => state = state.copyWith(difficulty: d);
   void setResultsView(String v) => state = state.copyWith(resultsView: v);
   void selectLayout(int id) => state = state.copyWith(selectedLayout: id);
-  void resetForNewProject() =>
-      state = ProjectState(items: List.from(seedItems));
+  void resetForNewProject() => state = ProjectState(
+        items: useMockData ? List.from(seedItems) : <DetectedItem>[],
+        saved: state.saved,
+      );
 
   void setRemoteProjectId(String? id) =>
       state = state.copyWith(remoteProjectId: id);

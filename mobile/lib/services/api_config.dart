@@ -13,9 +13,10 @@ const apiBaseUrl = String.fromEnvironment(
 );
 
 /// When true the app uses local mock data and skips real backend calls.
-/// Defaults to true so the design-pass build still boots without the backend
-/// or Firebase configured. Flip to `false` once Firebase + backend are wired.
-const useMockData = bool.fromEnvironment('USE_MOCK_DATA', defaultValue: true);
+/// Default is **false** — the app shows only data that actually came from the
+/// backend. Override with `--dart-define=USE_MOCK_DATA=true` if you want the
+/// old design-pass behaviour back.
+const useMockData = bool.fromEnvironment('USE_MOCK_DATA', defaultValue: false);
 
 /// When true the app calls `Firebase.initializeApp()` and routes through the
 /// login screen. Default false so iOS/Android build runs without
