@@ -18,6 +18,8 @@ class ProjectState {
   final List<SavedProject> saved;
   final bool emptyState;
   final String? modNote;
+  // Set when the user creates the project against the backend.
+  final String? remoteProjectId;
 
   const ProjectState({
     this.mode,
@@ -32,6 +34,7 @@ class ProjectState {
     this.saved = savedProjects,
     this.emptyState = false,
     this.modNote,
+    this.remoteProjectId,
   });
 
   ProjectState copyWith({
@@ -47,6 +50,7 @@ class ProjectState {
     List<SavedProject>? saved,
     bool? emptyState,
     String? modNote,
+    String? remoteProjectId,
   }) => ProjectState(
     mode: mode ?? this.mode,
     roomType: roomType ?? this.roomType,
@@ -60,6 +64,7 @@ class ProjectState {
     saved: saved ?? this.saved,
     emptyState: emptyState ?? this.emptyState,
     modNote: modNote ?? this.modNote,
+    remoteProjectId: remoteProjectId ?? this.remoteProjectId,
   );
 }
 
@@ -124,6 +129,9 @@ class ProjectController extends StateNotifier<ProjectState> {
   void selectLayout(int id) => state = state.copyWith(selectedLayout: id);
   void resetForNewProject() =>
       state = ProjectState(items: List.from(seedItems));
+
+  void setRemoteProjectId(String? id) =>
+      state = state.copyWith(remoteProjectId: id);
 
   void toggleSavedLayout(int id) {
     final s = Set<int>.from(state.savedLayoutIds);

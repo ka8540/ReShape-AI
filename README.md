@@ -439,8 +439,23 @@ If Celery isn't running, queue calls degrade to in-process logs so the API still
 ```bash
 cd mobile
 flutter pub get
-flutter run --dart-define=API_BASE_URL=http://localhost:8000
+# Design-pass (mock data, no Firebase, no backend required):
+flutter run --debug --dart-define=API_BASE_URL=http://127.0.0.1:8000
+
+# Real backend:
+flutter run --debug \
+  --dart-define=API_BASE_URL=http://127.0.0.1:8000 \
+  --dart-define=USE_MOCK_DATA=false \
+  --dart-define=ENABLE_FIREBASE=true
 ```
+
+Three compile-time flags drive runtime behaviour (`mobile/lib/services/api_config.dart`):
+
+| Flag | Default | Effect |
+|---|---|---|
+| `API_BASE_URL` | `http://127.0.0.1:8000` | Base URL for the FastAPI backend. |
+| `USE_MOCK_DATA` | `true` | When true, screens read the in-memory mock state. When false, project list / create / media calls hit the backend. |
+| `ENABLE_FIREBASE` | `false` | When true, `Firebase.initializeApp()` runs at startup and the router redirects unauthenticated users to `/login`. |
 
 ### Firebase setup
 

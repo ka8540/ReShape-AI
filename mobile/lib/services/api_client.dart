@@ -1,13 +1,8 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'api_config.dart';
 import 'auth_service.dart';
-
-/// Base URL for the FastAPI backend. Override via --dart-define=API_BASE_URL=...
-const apiBaseUrl = String.fromEnvironment(
-  'API_BASE_URL',
-  defaultValue: 'http://localhost:8000',
-);
 
 final apiClientProvider = Provider<Dio>((ref) {
   final dio = Dio(

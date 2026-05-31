@@ -3,8 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/app.dart';
+import 'services/firebase_bootstrap.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
@@ -12,6 +13,9 @@ void main() {
       statusBarIconBrightness: Brightness.dark,
     ),
   );
+  // Best-effort: failures are logged and the app keeps booting so the
+  // design-pass build still runs without Firebase config files.
+  await bootstrapFirebase();
   runApp(const ReSpaceBootstrap());
 }
 

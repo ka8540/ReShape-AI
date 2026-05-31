@@ -7,9 +7,14 @@ import 'package:go_router/go_router.dart';
 
 import '../data/mock_data.dart';
 import '../data/models.dart';
+import '../services/api_config.dart';
+import '../services/api_service.dart';
+import '../state/auth_state.dart';
 import '../state/project_state.dart';
+import '../state/remote_projects.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../widgets/backend_status_banner.dart';
 import '../widgets/design_system.dart';
 import '../widgets/room_art.dart';
 
@@ -174,6 +179,42 @@ class _IntroPillar extends StatelessWidget {
   }
 }
 
+/// Kicks off a new project. In mock mode this just resets the local
+/// controller and routes into the flow. In real-backend mode it also
+/// `POST /projects` so the rest of the flow has a real project_id to
+/// hang media / items / generation off of.
+Future<void> _startNewProject(
+  BuildContext context,
+  WidgetRef ref,
+  ProjectController controller,
+) async {
+  controller.resetForNewProject();
+  if (useMockData) {
+    if (context.mounted) context.go('/mode');
+    return;
+  }
+  try {
+    final create = ref.read(createProjectProvider);
+    final created = await create(
+      name: 'Untitled project',
+      mode: 'reshuffle',
+    );
+    final id = created['id']?.toString();
+    if (id != null) controller.setRemoteProjectId(id);
+    if (context.mounted) context.go('/mode');
+  } on ApiException catch (e) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Could not start project: ${e.message}')),
+    );
+  } catch (e) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Could not start project: $e')),
+    );
+  }
+}
+
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -206,6 +247,7 @@ class HomeScreen extends ConsumerWidget {
               ],
             ),
           ),
+          const BackendStatusBanner(),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
@@ -253,10 +295,11 @@ class HomeScreen extends ConsumerWidget {
                             RsButton(
                               label: 'New project',
                               icon: Icons.add_rounded,
-                              onPressed: () {
-                                controller.resetForNewProject();
-                                context.go('/mode');
-                              },
+                              onPressed: () => _startNewProject(
+                                context,
+                                ref,
+                                controller,
+                              ),
                             ),
                           ],
                         ),
@@ -524,35 +567,18 @@ class SavedProjectsScreen extends StatelessWidget {
                 ),
               ),
               Expanded(
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                  children: [
-                    for (final saved in project.saved) ...[
-                      ProjectCard(project: saved),
-                      const SizedBox(height: 11),
-                    ],
-                    RsCard(
-                      padding: const EdgeInsets.all(18),
-                      borderStyle: BorderStyle.solid,
-                      shadow: false,
-                      onTap: () => context.go('/mode'),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                child: useMockData
+                    ? ListView(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
                         children: [
-                          const Icon(Icons.add_rounded, color: AppColors.teal),
-                          const SizedBox(width: 9),
-                          Text(
-                            'New project',
-                            style: AppText.sm(
-                              color: AppColors.teal,
-                              weight: FontWeight.w700,
-                            ),
-                          ),
+                          for (final saved in project.saved) ...[
+                            ProjectCard(project: saved),
+                            const SizedBox(height: 11),
+                          ],
+                          _NewProjectCta(),
                         ],
-                      ),
-                    ),
-                  ],
-                ),
+                      )
+                    : _RemoteProjectsList(),
               ),
             ],
           ),
@@ -562,11 +588,11 @@ class SavedProjectsScreen extends StatelessWidget {
   }
 }
 
-class ProfileScreen extends StatelessWidget {
+class ProfileScreen extends ConsumerWidget {
   const ProfileScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return PageShell(
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -659,7 +685,11 @@ class ProfileScreen extends StatelessWidget {
           RsButton(
             label: 'Log out',
             variant: RsButtonVariant.danger,
-            onPressed: () => context.go('/'),
+            onPressed: () async {
+              await ref.read(appAuthControllerProvider.notifier).signOut();
+              if (!context.mounted) return;
+              context.go(enableFirebase ? '/login' : '/');
+            },
           ),
         ],
       ),
@@ -3641,6 +3671,160 @@ class RedesignComingSoonScreen extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NewProjectCta extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return RsCard(
+      padding: const EdgeInsets.all(18),
+      borderStyle: BorderStyle.solid,
+      shadow: false,
+      onTap: () => context.go('/mode'),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.add_rounded, color: AppColors.teal),
+          const SizedBox(width: 9),
+          Text(
+            'New project',
+            style: AppText.sm(
+              color: AppColors.teal,
+              weight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RemoteProjectsList extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final async = ref.watch(remoteProjectsProvider);
+    return async.when(
+      loading: () => const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: CircularProgressIndicator(color: AppColors.teal),
+        ),
+      ),
+      error: (e, _) {
+        final unauthorized =
+            e is ApiException && e.isUnauthorized;
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          children: [
+            RsCard(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    unauthorized
+                        ? 'Please sign in again'
+                        : 'Could not load projects',
+                    style: AppText.h3(color: AppColors.danger),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    e is ApiException ? e.message : e.toString(),
+                    style: AppText.xs(),
+                  ),
+                  const SizedBox(height: 12),
+                  RsButton(
+                    label: 'Retry',
+                    icon: Icons.refresh_rounded,
+                    variant: RsButtonVariant.soft,
+                    compact: true,
+                    expand: false,
+                    onPressed: () => ref.invalidate(remoteProjectsProvider),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 11),
+            _NewProjectCta(),
+          ],
+        );
+      },
+      data: (rows) {
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          children: [
+            if (rows.isEmpty)
+              RsCard(
+                padding: const EdgeInsets.all(22),
+                child: Column(
+                  children: [
+                    Text('No projects yet', style: AppText.h3()),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Create your first reshuffle project to get started.',
+                      style: AppText.sm(),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              )
+            else
+              for (final row in rows) ...[
+                _RemoteProjectCard(row: row),
+                const SizedBox(height: 11),
+              ],
+            const SizedBox(height: 4),
+            _NewProjectCta(),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _RemoteProjectCard extends StatelessWidget {
+  const _RemoteProjectCard({required this.row});
+
+  final Map<String, dynamic> row;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = row['name']?.toString() ?? 'Untitled';
+    final mode = row['mode']?.toString() ?? 'reshuffle';
+    final status = row['status']?.toString() ?? 'draft';
+    return RsCard(
+      padding: const EdgeInsets.all(13),
+      onTap: () => context.go('/results'),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppColors.tealTint,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.home_work_rounded,
+              color: AppColors.tealInk,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(name, style: AppText.h3().copyWith(fontSize: 15.5)),
+                const SizedBox(height: 4),
+                Text('$mode • $status', style: AppText.xs()),
+              ],
+            ),
+          ),
+          const Icon(Icons.chevron_right_rounded, color: AppColors.ink3),
         ],
       ),
     );

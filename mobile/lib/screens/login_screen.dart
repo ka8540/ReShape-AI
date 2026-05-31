@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../services/auth_service.dart';
+import '../state/auth_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../widgets/design_system.dart';
@@ -65,7 +66,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             RsButton(
               label: 'Continue as guest',
               variant: RsButtonVariant.quiet,
-              onPressed: _busy ? null : () => context.go('/home'),
+              onPressed: _busy
+                  ? null
+                  : () {
+                      ref.read(appAuthControllerProvider.notifier).continueAsGuest();
+                      context.go('/home');
+                    },
             ),
           ],
         ),

@@ -2,16 +2,40 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../screens/login_screen.dart';
 import '../screens/screens.dart';
+import '../services/api_config.dart';
+import '../state/auth_state.dart';
 import '../widgets/design_system.dart';
 
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
 
 final routerProvider = Provider<GoRouter>((ref) {
+  // Watch auth status so the router re-evaluates redirects on sign-in/out.
+  final auth = ref.watch(appAuthControllerProvider);
+
   return GoRouter(
     initialLocation: '/',
     navigatorKey: _rootNavigatorKey,
+    redirect: (context, state) {
+      if (!enableFirebase) return null; // mock-data design build
+      final loggingIn = state.matchedLocation == '/login';
+      switch (auth.status) {
+        case AppAuthStatus.booting:
+          return loggingIn ? null : '/login';
+        case AppAuthStatus.unauthenticated:
+          return loggingIn ? null : '/login';
+        case AppAuthStatus.authenticated:
+        case AppAuthStatus.guest:
+          return loggingIn ? '/home' : null;
+      }
+    },
     routes: [
+      GoRoute(
+        path: '/login',
+        pageBuilder: (context, state) =>
+            const NoTransitionPage(child: LoginScreen()),
+      ),
       GoRoute(
         path: '/',
         pageBuilder: (context, state) =>
