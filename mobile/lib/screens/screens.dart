@@ -2924,32 +2924,22 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
         return;
       }
 
+      // /designs now returns output_read_url + error fields inline, so we don't
+      // need a detail call per design.
       final views = <GeneratedDesignView>[];
       var anyReady = false;
       var anyPending = false;
       String? failureMessage;
       for (final row in rows) {
-        final status = (row['generation_status'] ?? '').toString();
-        if (status == 'succeeded') {
-          String? url;
-          try {
-            final detail = await api.getDesign(
-              projectId: _projectId,
-              designId: (row['id'] ?? '').toString(),
-            );
-            url = detail['output_read_url']?.toString();
-          } catch (_) {
-            // fall through; treated as not-yet-ready below
-          }
-          final view = GeneratedDesignView.fromJson(row, imageUrl: url);
-          if (view.imageUrl != null) anyReady = true;
-          views.add(view);
-        } else {
-          final view = GeneratedDesignView.fromJson(row);
-          if (view.isPending) anyPending = true;
-          if (view.isFailed) failureMessage = view.errorMessage ?? failureMessage;
-          views.add(view);
+        final view = GeneratedDesignView.fromJson(row);
+        if (view.imageUrl != null) {
+          anyReady = true;
+        } else if (view.isPending) {
+          anyPending = true;
+        } else if (view.isFailed) {
+          failureMessage = view.errorMessage ?? failureMessage;
         }
+        views.add(view);
       }
       ref.read(projectControllerProvider.notifier).setDesigns(views);
 

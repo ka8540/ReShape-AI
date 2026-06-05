@@ -10,12 +10,20 @@ from app.services import design_service, generation_service
 router = APIRouter(prefix="/projects/{project_id}/designs", tags=["designs"])
 
 
-@router.get("", response_model=list[DesignOut])
+@router.get("", response_model=list[DesignWithUrls])
 def list_designs(
     project: Project = Depends(verify_project_owner),
     db: Session = Depends(get_db),
-) -> list[DesignOut]:
-    return [DesignOut.model_validate(d) for d in generation_service.list_designs(db, project)]
+) -> list[DesignWithUrls]:
+    # Include the signed read URL + error fields inline so the Results screen
+    # doesn't have to call the detail endpoint for every design.
+    return [
+        DesignWithUrls(
+            **DesignOut.model_validate(d).model_dump(),
+            **design_service.with_signed_urls(d),
+        )
+        for d in generation_service.list_designs(db, project)
+    ]
 
 
 @router.get("/{design_id}", response_model=DesignWithUrls)

@@ -1,5 +1,8 @@
-"""Image generation worker: calls Gemini through AiImageService and writes
-output to R2.
+"""Image generation worker.
+
+The real work lives in `generation_service.run_generation_job`. This module only
+bridges Celery to it: `enqueue_generation_batch` dispatches the task (production),
+and the task body calls the same shared function the inline path uses.
 """
 
 from __future__ import annotations
@@ -11,61 +14,21 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-def enqueue_generation(
-    *, design_id: str, prompt: str, reference_media_id: str | None
-) -> None:
+def enqueue_generation_batch(design_ids: list[str]) -> None:
+    """Dispatch a generation batch to Celery.
+
+    Raises if Celery is unavailable so the caller (generation_service) can fall
+    back to inline execution in local/dev.
+    """
     if celery_app is None:
-        logger.info(
-            "[stub] generation queued design=%s reference=%s",
-            design_id,
-            reference_media_id,
-        )
-        return
-    run_generation.delay(design_id, prompt, reference_media_id)
+        raise RuntimeError("Celery is not available")
+    run_generation_task.delay(design_ids)
 
 
 if celery_app is not None:  # pragma: no cover - requires celery
 
     @celery_app.task(name="workers.run_generation")
-    def run_generation(
-        design_id: str, prompt: str, reference_media_id: str | None
-    ) -> None:
-        from app.core.database import SessionLocal
-        from app.models.generated_design import GeneratedDesign
-        from app.services import r2_storage_service
-        from app.services.ai_image_service import (
-            AiImageService,
-            ImageGenerationFailure,
-            ImageGenerationResult,
-        )
-        from app.services.prompt_builder import PROMPT_VERSION
+    def run_generation_task(design_ids: list[str]) -> None:
+        from app.services.generation_service import run_generation_job
 
-        db = SessionLocal()
-        try:
-            design = db.get(GeneratedDesign, design_id)
-            if design is None:
-                logger.error("design %s missing", design_id)
-                return
-            result = AiImageService().generate(
-                prompt=prompt, prompt_version=PROMPT_VERSION
-            )
-            if isinstance(result, ImageGenerationFailure):
-                design.generation_status = "failed"
-                design.error_code = result.error_code
-                design.error_message = result.error_message
-                db.commit()
-                return
-            assert isinstance(result, ImageGenerationResult)
-            storage_key = f"{design.project_id}/designs/{design.id}.png"
-            r2_storage_service.put_object(
-                storage_key=storage_key,
-                data=result.image_bytes,
-                content_type=result.mime_type,
-            )
-            design.output_image_key = storage_key
-            design.model_name = result.model_name
-            design.prompt_version = result.prompt_version
-            design.generation_status = "succeeded"
-            db.commit()
-        finally:
-            db.close()
+        run_generation_job(design_ids)

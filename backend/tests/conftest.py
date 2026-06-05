@@ -87,3 +87,45 @@ def auth_as(client):
 
     yield setup
     app.dependency_overrides.pop(get_firebase_verifier, None)
+
+
+@pytest.fixture(autouse=True)
+def offline_generation(monkeypatch):
+    """Keep the test suite fully offline: never call real Gemini or R2.
+
+    Generation defaults to inline in tests (APP_ENV=local), so without this the
+    pipeline would hit the network. Individual tests override these as needed.
+    """
+    from app.services import ai_image_service, r2_storage_service
+
+    def _disabled_generate(
+        self,
+        *,
+        prompt,
+        prompt_version,
+        reference_image_bytes=None,
+        reference_image_mime=None,
+    ):
+        return ai_image_service.ImageGenerationFailure(
+            error_code="TEST_DISABLED",
+            error_message="Gemini disabled in tests",
+            attempts=[],
+        )
+
+    monkeypatch.setattr(
+        ai_image_service.AiImageService, "generate", _disabled_generate
+    )
+    monkeypatch.setattr(
+        r2_storage_service, "get_object", lambda *, storage_key: None
+    )
+    monkeypatch.setattr(
+        r2_storage_service,
+        "put_object",
+        lambda *, storage_key, data, content_type: True,
+    )
+    monkeypatch.setattr(
+        r2_storage_service,
+        "read_url",
+        lambda *, storage_key, expires_in=3600: f"https://signed.test/{storage_key}",
+    )
+    yield

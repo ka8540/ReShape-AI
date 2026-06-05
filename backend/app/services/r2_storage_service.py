@@ -74,15 +74,37 @@ def read_url(*, storage_key: str, expires_in: int = DEFAULT_EXPIRES) -> str:
     )
 
 
-def put_object(*, storage_key: str, data: bytes, content_type: str) -> None:
+def get_object(*, storage_key: str) -> bytes | None:
+    """Download an object's bytes from R2. Returns None when R2 isn't configured
+    or the object can't be fetched, so callers can fail cleanly."""
+    client = _client()
+    settings = get_settings()
+    if client is None:
+        logger.info("R2 not configured; cannot get_object %s", storage_key)
+        return None
+    try:
+        resp = client.get_object(Bucket=settings.R2_BUCKET_NAME, Key=storage_key)
+        return resp["Body"].read()
+    except Exception as exc:  # noqa: BLE001 - surface as "no reference" upstream
+        logger.warning("get_object failed for %s: %s", storage_key, exc)
+        return None
+
+
+def is_configured() -> bool:
+    return _client() is not None
+
+
+def put_object(*, storage_key: str, data: bytes, content_type: str) -> bool:
+    """Upload bytes to R2. Returns True if stored, False if R2 isn't configured."""
     client = _client()
     settings = get_settings()
     if client is None:
         logger.info("R2 not configured; skipping put_object for %s", storage_key)
-        return
+        return False
     client.put_object(
         Bucket=settings.R2_BUCKET_NAME,
         Key=storage_key,
         Body=data,
         ContentType=content_type,
     )
+    return True

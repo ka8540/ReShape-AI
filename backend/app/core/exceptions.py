@@ -23,3 +23,7 @@ def bad_request(detail: str) -> AppError:
 
 def conflict(detail: str) -> AppError:
     return AppError(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+def service_unavailable(detail: str) -> AppError:
+    return AppError(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)

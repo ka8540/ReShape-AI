@@ -24,11 +24,19 @@ class Settings(BaseSettings):
     FIREBASE_PROJECT_ID: str = ""
     FIREBASE_CREDENTIALS_PATH: str = "./firebase-service-account.json"
 
+    # How layout generation runs:
+    #   inline   = run synchronously in the API process (good for local/dev)
+    #   celery   = enqueue a Celery task (production; needs a running worker)
+    #   disabled = reject generation requests with a clear 503
+    # Empty string -> inline in local, celery otherwise (see generation_mode).
+    GENERATION_EXECUTION_MODE: str = ""
+
     # Gemini image generation — env-driven so Google's rolling releases never
-    # require a code change.
+    # require a code change. Defaults are current image-capable model ids;
+    # the fallback chain is tried in order on availability/permission errors.
     GEMINI_API_KEY: str = Field(default="", description="Google AI Studio API key.")
-    GEMINI_IMAGE_MODEL: str = "gemini-3.1-flash-image-preview"
-    GEMINI_IMAGE_FALLBACK_MODEL: str = "gemini-3-pro-image-preview"
+    GEMINI_IMAGE_MODEL: str = "gemini-3.1-flash-image"
+    GEMINI_IMAGE_FALLBACK_MODEL: str = "gemini-3.1-flash-image-preview"
     GEMINI_IMAGE_LEGACY_MODEL: str = "gemini-2.5-flash-image"
 
     # Cloudflare R2 (private bucket; backend issues signed URLs).
@@ -54,6 +62,15 @@ class Settings(BaseSettings):
         "video/mp4",
         "video/quicktime",
     )
+
+    @property
+    def generation_mode(self) -> str:
+        """Resolved generation execution mode. Defaults to inline locally so the
+        MVP works without a Celery worker, and celery everywhere else."""
+        explicit = (self.GENERATION_EXECUTION_MODE or "").strip().lower()
+        if explicit in ("inline", "celery", "disabled"):
+            return explicit
+        return "inline" if self.APP_ENV == "local" else "celery"
 
     @property
     def mock_detection_enabled(self) -> bool:

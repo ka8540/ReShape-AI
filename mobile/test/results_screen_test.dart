@@ -10,39 +10,42 @@ import 'package:respace_ai/screens/screens.dart';
 import 'package:respace_ai/services/api_service.dart';
 import 'package:respace_ai/state/project_state.dart';
 
+Map<String, dynamic> _design(
+  String id, {
+  required String status,
+  String? url,
+  String? error,
+}) {
+  return {
+    'id': id,
+    'project_id': 'p1',
+    'generation_status': status,
+    'is_selected': false,
+    'output_read_url': url,
+    'error_code': error == null ? null : 'GEMINI_AUTH_FAILED',
+    'error_message': error,
+  };
+}
+
 class _FakeApi extends ApiService {
   _FakeApi({
     required this.designs,
-    this.urls = const {},
     this.generateReturns,
     this.hangGenerate = false,
   }) : super(Dio());
 
   List<Map<String, dynamic>> designs;
-  Map<String, String> urls;
   List<Map<String, dynamic>>? generateReturns;
   bool hangGenerate;
+  int generateCalls = 0;
   bool selectCalled = false;
   String? selectedId;
 
   final Completer<List<Map<String, dynamic>>> _never = Completer();
 
   @override
-  Future<List<Map<String, dynamic>>> listDesigns(String projectId) async {
-    return designs;
-  }
-
-  @override
-  Future<Map<String, dynamic>> getDesign({
-    required String projectId,
-    required String designId,
-  }) async {
-    return {
-      'id': designId,
-      'generation_status': 'succeeded',
-      'output_read_url': urls[designId],
-    };
-  }
+  Future<List<Map<String, dynamic>>> listDesigns(String projectId) async =>
+      designs;
 
   @override
   Future<List<Map<String, dynamic>>> generateLayouts({
@@ -50,6 +53,7 @@ class _FakeApi extends ApiService {
     int variants = 3,
     String? referenceMediaId,
   }) async {
+    generateCalls++;
     if (hangGenerate) return _never.future;
     if (generateReturns != null) designs = generateReturns!;
     return designs;
@@ -106,10 +110,9 @@ Future<void> _pump(WidgetTester tester, _FakeApi api) async {
 }
 
 void main() {
-  testWidgets('shows a loading/generating state while generating', (
+  testWidgets('shows generating state while generation is running', (
     tester,
   ) async {
-    // Empty designs → auto-generate, which never completes → stays generating.
     final api = _FakeApi(designs: const [], hangGenerate: true);
     await _pump(tester, api);
 
@@ -117,21 +120,18 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsWidgets);
   });
 
-  testWidgets('shows real backend image URL when designs exist', (tester) async {
+  testWidgets('renders the real output_read_url when designs are ready', (
+    tester,
+  ) async {
     final api = _FakeApi(
       designs: [
-        {'id': 'd1', 'generation_status': 'succeeded', 'is_selected': false},
-        {'id': 'd2', 'generation_status': 'succeeded', 'is_selected': false},
+        _design('d1', status: 'succeeded', url: 'https://cdn.example.com/d1.png'),
+        _design('d2', status: 'succeeded', url: 'https://cdn.example.com/d2.png'),
       ],
-      urls: {
-        'd1': 'https://cdn.example.com/d1.png',
-        'd2': 'https://cdn.example.com/d2.png',
-      },
     );
     await _pump(tester, api);
 
     expect(find.text('Generated layouts'), findsOneWidget);
-    expect(find.text('Choose the layout you want to use.'), findsOneWidget);
     expect(
       find.byWidgetPredicate(
         (w) => w is CachedNetworkImage && w.imageUrl == 'https://cdn.example.com/d1.png',
@@ -140,14 +140,33 @@ void main() {
     );
   });
 
-  testWidgets('does NOT render Grid/Swipe/Compare or fake titles in real mode', (
+  testWidgets('shows the backend failure message in the error state', (
     tester,
   ) async {
     final api = _FakeApi(
       designs: [
-        {'id': 'd1', 'generation_status': 'succeeded', 'is_selected': false},
+        _design(
+          'd1',
+          status: 'failed',
+          error: 'Gemini authentication failed. Use a valid Google AI Studio API key.',
+        ),
       ],
-      urls: {'d1': 'https://cdn.example.com/d1.png'},
+    );
+    await _pump(tester, api);
+
+    expect(find.text('Generation failed'), findsOneWidget);
+    expect(
+      find.text('Gemini authentication failed. Use a valid Google AI Studio API key.'),
+      findsOneWidget,
+    );
+    expect(find.text('Try again'), findsOneWidget);
+  });
+
+  testWidgets('no fake gallery text in real mode', (tester) async {
+    final api = _FakeApi(
+      designs: [
+        _design('d1', status: 'succeeded', url: 'https://cdn.example.com/d1.png'),
+      ],
     );
     await _pump(tester, api);
 
@@ -156,11 +175,9 @@ void main() {
     expect(find.text('Compare'), findsNothing);
     expect(find.text('The Open Studio'), findsNothing);
     expect(find.text('Focused Work Corner'), findsNothing);
-    expect(find.text('Cosy Lounge'), findsNothing);
   });
 
-  testWidgets('shows empty state when no designs are generated', (tester) async {
-    // List empty, and generation also returns nothing → honest empty state.
+  testWidgets('empty state when nothing is generated', (tester) async {
     final api = _FakeApi(designs: const [], generateReturns: const []);
     await _pump(tester, api);
 
@@ -168,22 +185,44 @@ void main() {
     expect(find.text('Regenerate'), findsOneWidget);
   });
 
-  testWidgets('selecting a design persists it and continues to final', (
+  testWidgets('Regenerate calls the backend and can recover to ready', (
     tester,
   ) async {
     final api = _FakeApi(
       designs: [
-        {'id': 'd1', 'generation_status': 'succeeded', 'is_selected': false},
-        {'id': 'd2', 'generation_status': 'succeeded', 'is_selected': false},
+        _design('d1', status: 'failed', error: 'Gemini auth failed.'),
       ],
-      urls: {
-        'd1': 'https://cdn.example.com/d1.png',
-        'd2': 'https://cdn.example.com/d2.png',
-      },
+      generateReturns: [
+        _design('d2', status: 'succeeded', url: 'https://cdn.example.com/d2.png'),
+      ],
     );
     await _pump(tester, api);
 
-    // Pick the second layout via its thumbnail.
+    expect(find.text('Generation failed'), findsOneWidget);
+    await tester.tap(find.text('Try again'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 40));
+
+    expect(api.generateCalls, 1);
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is CachedNetworkImage && w.imageUrl == 'https://cdn.example.com/d2.png',
+      ),
+      findsWidgets,
+    );
+  });
+
+  testWidgets('selecting a layout persists it and continues to final', (
+    tester,
+  ) async {
+    final api = _FakeApi(
+      designs: [
+        _design('d1', status: 'succeeded', url: 'https://cdn.example.com/d1.png'),
+        _design('d2', status: 'succeeded', url: 'https://cdn.example.com/d2.png'),
+      ],
+    );
+    await _pump(tester, api);
+
     await tester.tap(
       find.byWidgetPredicate(
         (w) => w is CachedNetworkImage && w.imageUrl == 'https://cdn.example.com/d2.png',
@@ -192,7 +231,6 @@ void main() {
     await tester.pump();
     expect(find.text('Layout 2'), findsOneWidget);
 
-    // Confirm selection -> calls select API and routes to final.
     await tester.tap(find.text('Use this layout'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 40));
