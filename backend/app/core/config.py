@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     GEMINI_IMAGE_MODEL: str = "gemini-3.1-flash-image"
     GEMINI_IMAGE_FALLBACK_MODEL: str = "gemini-3.1-flash-image-preview"
     GEMINI_IMAGE_LEGACY_MODEL: str = "gemini-2.5-flash-image"
+    GEMINI_TEXT_MODEL: str = "gemini-2.5-flash"
 
     # Cloudflare R2 (private bucket; backend issues signed URLs).
     R2_ACCOUNT_ID: str = ""

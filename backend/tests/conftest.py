@@ -112,8 +112,28 @@ def offline_generation(monkeypatch):
             attempts=[],
         )
 
+    def _disabled_structured_plan(
+        self,
+        *,
+        prompt,
+        reference_image_bytes,
+        reference_image_mime,
+        generated_image_bytes,
+        generated_image_mime,
+    ):
+        return ai_image_service.ImageGenerationFailure(
+            error_code="TEST_DISABLED",
+            error_message="Gemini structured plan disabled in tests",
+            attempts=[],
+        )
+
     monkeypatch.setattr(
         ai_image_service.AiImageService, "generate", _disabled_generate
+    )
+    monkeypatch.setattr(
+        ai_image_service.AiImageService,
+        "generate_structured_move_plan",
+        _disabled_structured_plan,
     )
     monkeypatch.setattr(
         r2_storage_service, "get_object", lambda *, storage_key: None

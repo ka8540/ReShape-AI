@@ -39,6 +39,12 @@ class ImageGenerationFailure:
     attempts: list[tuple[str, str]]
 
 
+@dataclass
+class StructuredMovePlanResult:
+    raw_json: str
+    model_name: str
+
+
 class AiImageService:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
@@ -125,6 +131,60 @@ class AiImageService:
             attempts=attempts,
         )
 
+    def generate_structured_move_plan(
+        self,
+        *,
+        prompt: str,
+        reference_image_bytes: bytes,
+        reference_image_mime: str,
+        generated_image_bytes: bytes,
+        generated_image_mime: str,
+    ) -> StructuredMovePlanResult | ImageGenerationFailure:
+        model_name = self._settings.GEMINI_TEXT_MODEL
+        try:
+            from google import genai
+            from google.genai import errors as genai_errors
+        except ImportError as exc:
+            logger.error("google-genai not installed: %s", exc)
+            return ImageGenerationFailure(
+                error_code="SDK_UNAVAILABLE",
+                error_message=str(exc),
+                attempts=[],
+            )
+
+        try:
+            client = self._ensure_client()
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    prompt,
+                    genai.types.Part.from_bytes(
+                        data=reference_image_bytes,
+                        mime_type=reference_image_mime or "image/jpeg",
+                    ),
+                    genai.types.Part.from_bytes(
+                        data=generated_image_bytes,
+                        mime_type=generated_image_mime or "image/png",
+                    ),
+                ],
+            )
+        except genai_errors.APIError as exc:
+            logger.error("Gemini structured move plan failed on %s: %s", model_name, exc)
+            return ImageGenerationFailure(
+                error_code=self._status_of(exc) or "API_ERROR",
+                error_message=str(exc),
+                attempts=[(model_name, str(exc))],
+            )
+
+        text = self._extract_text(response)
+        if not text:
+            return ImageGenerationFailure(
+                error_code="NO_STRUCTURED_PLAN",
+                error_message="Gemini returned no structured move-plan text.",
+                attempts=[(model_name, "no text in response")],
+            )
+        return StructuredMovePlanResult(raw_json=text, model_name=model_name)
+
     def _generate_with_model(
         self,
         *,
@@ -157,6 +217,21 @@ class AiImageService:
                 if inline and getattr(inline, "data", None):
                     return inline.data, getattr(inline, "mime_type", "image/png")
         return None
+
+    @staticmethod
+    def _extract_text(response: object) -> str | None:
+        text = getattr(response, "text", None)
+        if text:
+            return str(text)
+        candidates: Iterable = getattr(response, "candidates", []) or []
+        chunks: list[str] = []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            for part in getattr(content, "parts", []) or []:
+                part_text = getattr(part, "text", None)
+                if part_text:
+                    chunks.append(str(part_text))
+        return "\n".join(chunks) if chunks else None
 
     @staticmethod
     def _is_retryable(exc) -> bool:

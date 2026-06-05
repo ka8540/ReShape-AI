@@ -4211,10 +4211,22 @@ class _FinalPlanScreenState extends ConsumerState<FinalPlanScreen> {
         );
       }
 
-      final afterImageUrl = _realImageUrl(selectedDesign?['output_read_url']);
-      final referenceImageUrl = _realImageUrl(
-        selectedDesign?['reference_read_url'],
-      );
+      final afterImageUrl =
+          _realImageUrl(finalPlan?['selected_design_output_read_url']) ??
+          _realImageUrl(selectedDesign?['output_read_url']);
+      final referenceImageUrl =
+          _realImageUrl(finalPlan?['selected_design_reference_read_url']) ??
+          _realImageUrl(selectedDesign?['reference_read_url']);
+      final planJson =
+          _nonBlank(finalPlan?['layout_plan_json']) ??
+          _nonBlank(finalPlan?['plan_json']) ??
+          _nonBlank(selectedDesign?['layout_plan_json']);
+      final layoutPlanStatus =
+          _nonBlank(finalPlan?['layout_plan_status']) ??
+          _nonBlank(selectedDesign?['layout_plan_status']);
+      final layoutPlanError =
+          _nonBlank(finalPlan?['layout_plan_error']) ??
+          _nonBlank(selectedDesign?['layout_plan_error']);
       final beforeImageUrl = await _loadBeforeImageUrl(
         api: api,
         projectId: projectId,
@@ -4231,6 +4243,9 @@ class _FinalPlanScreenState extends ConsumerState<FinalPlanScreen> {
           afterImageUrl: afterImageUrl,
           items: items,
           finalPlan: finalPlan,
+          planJson: planJson,
+          layoutPlanStatus: layoutPlanStatus,
+          layoutPlanError: layoutPlanError,
         );
         _phase = _FinalPlanPhase.ready;
       });
@@ -4289,7 +4304,6 @@ class _FinalPlanScreenState extends ConsumerState<FinalPlanScreen> {
           .saveFinalPlan(
             projectId: data.projectId!,
             selectedDesignId: data.selectedDesignId!,
-            planJson: data.planJson,
           );
       if (mounted) context.go('/home');
     } catch (e) {
@@ -4319,6 +4333,9 @@ class _FinalPlanData {
     this.selectedDesignId,
     this.beforeImageUrl,
     this.afterImageUrl,
+    this.planJson,
+    this.layoutPlanStatus,
+    this.layoutPlanError,
   });
 
   final String? projectId;
@@ -4327,28 +4344,47 @@ class _FinalPlanData {
   final String? afterImageUrl;
   final List<DetectedItem> items;
   final Map<String, dynamic>? finalPlan;
+  final String? planJson;
+  final String? layoutPlanStatus;
+  final String? layoutPlanError;
 
   bool get hasSavedPlan => finalPlan != null;
-  String? get planJson => _nonBlank(finalPlan?['plan_json']);
   Map<String, dynamic>? get planMap => _decodePlanJson(planJson);
-  List<String> get moveSteps => _stringListFromPlan(planMap, const [
-    'steps',
-    'move_steps',
-    'checklist',
-    'instructions',
-  ]);
-  List<String> get movedItems => _stringListFromPlan(planMap, const [
-    'moved_items',
-    'movedItems',
-    'changed_items',
-    'item_changes',
-  ]);
-  Object? get structuredPlan => _firstPlanValue(planMap, const [
-    'layout_plan',
-    'structured_layout',
-    'floor_plan',
-    'move_plan',
-  ]);
+  bool get planFailed =>
+      layoutPlanStatus == 'failed' ||
+      _nonBlank(planMap?['layout_plan_status']) == 'failed';
+  String? get planError =>
+      layoutPlanError ?? _nonBlank(planMap?['layout_plan_error']);
+  _GeneratedFloorPlan? get floorPlan {
+    if (planFailed) return null;
+    final raw = planMap?['floor_plan'];
+    if (raw is Map) return _GeneratedFloorPlan.fromMap(raw);
+    return null;
+  }
+
+  List<_GeneratedMovedItem> get movedItems {
+    if (planFailed) return const [];
+    final raw = planMap?['moved_items'];
+    if (raw is! Iterable) return const [];
+    return raw
+        .whereType<Map>()
+        .map((item) => _GeneratedMovedItem.fromMap(item))
+        .whereType<_GeneratedMovedItem>()
+        .toList();
+  }
+
+  List<_GeneratedChecklistItem> get checklist {
+    if (planFailed) return const [];
+    final raw = planMap?['checklist'];
+    if (raw is! Iterable) return const [];
+    return raw
+        .whereType<Map>()
+        .map((item) => _GeneratedChecklistItem.fromMap(item))
+        .whereType<_GeneratedChecklistItem>()
+        .toList();
+  }
+
+  String? get roomSummary => _nonBlank(planMap?['room_summary']);
 }
 
 class _FinalPlanRealBody extends StatelessWidget {
@@ -4368,14 +4404,20 @@ class _FinalPlanRealBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final steps = data.moveSteps;
-    final progress = steps.isEmpty ? 0.0 : done.length / steps.length;
+    final floorPlan = data.floorPlan;
+    final movedItems = data.movedItems;
+    final checklist = data.checklist;
+    final progress = checklist.isEmpty ? 0.0 : done.length / checklist.length;
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 22),
       children: [
         _FinalPlanStatusNotice(data: data),
         const SizedBox(height: 10),
         Text('Your move plan', style: AppText.h1()),
+        if (data.roomSummary != null) ...[
+          const SizedBox(height: 8),
+          Text(data.roomSummary!, style: AppText.sm()),
+        ],
         const SizedBox(height: 14),
         RsCard(
           clip: Clip.antiAlias,
@@ -4428,15 +4470,24 @@ class _FinalPlanRealBody extends StatelessWidget {
         else
           _DetectedItemsList(items: data.items),
         const SizedBox(height: 18),
-        Text(
-          'Structured move plan',
-          style: AppText.h2().copyWith(fontSize: 17),
-        ),
+        Text('Floor plan', style: AppText.h2().copyWith(fontSize: 17)),
         const SizedBox(height: 8),
-        if (data.structuredPlan == null)
+        if (data.planFailed)
+          RsNotice(
+            text:
+                data.planError ??
+                'Structured move plan could not be generated.',
+            warn: true,
+          )
+        else if (floorPlan == null || floorPlan.items.isEmpty)
           const RsNotice(text: 'Structured move plan is not available yet.')
         else
-          _FinalPlanPayloadCard(value: data.structuredPlan!),
+          RsCard(
+            clip: Clip.antiAlias,
+            color: AppColors.surface2,
+            shadow: false,
+            child: _GeneratedFloorPlanView(plan: floorPlan),
+          ),
         const SizedBox(height: 18),
         Row(
           children: [
@@ -4446,9 +4497,9 @@ class _FinalPlanRealBody extends StatelessWidget {
                 style: AppText.h2().copyWith(fontSize: 17),
               ),
             ),
-            if (data.movedItems.isNotEmpty)
+            if (movedItems.isNotEmpty)
               Text(
-                '${data.movedItems.length}',
+                '${movedItems.length}',
                 style: AppText.sm(
                   color: AppColors.teal,
                   weight: FontWeight.w800,
@@ -4457,17 +4508,10 @@ class _FinalPlanRealBody extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 8),
-        if (data.movedItems.isEmpty)
+        if (movedItems.isEmpty)
           const RsNotice(text: 'Moved item details are not available yet.')
         else
-          Wrap(
-            spacing: 7,
-            runSpacing: 7,
-            children: [
-              for (final item in data.movedItems)
-                RsBadge(label: item, icon: Icons.open_in_full_rounded),
-            ],
-          ),
+          _MovedItemsList(items: movedItems),
         const SizedBox(height: 22),
         Row(
           children: [
@@ -4477,9 +4521,9 @@ class _FinalPlanRealBody extends StatelessWidget {
                 style: AppText.h2().copyWith(fontSize: 18),
               ),
             ),
-            if (steps.isNotEmpty)
+            if (checklist.isNotEmpty)
               Text(
-                '${done.length}/${steps.length}',
+                '${done.length}/${checklist.length}',
                 style: AppText.sm(
                   color: AppColors.teal,
                   weight: FontWeight.w800,
@@ -4488,7 +4532,7 @@ class _FinalPlanRealBody extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 8),
-        if (steps.isEmpty)
+        if (checklist.isEmpty)
           const RsNotice(text: 'Move checklist is not available yet.')
         else ...[
           LinearProgressIndicator(
@@ -4499,10 +4543,10 @@ class _FinalPlanRealBody extends StatelessWidget {
             backgroundColor: AppColors.surface3,
           ),
           const SizedBox(height: 14),
-          for (var i = 0; i < steps.length; i++) ...[
-            ChecklistRow(
+          for (var i = 0; i < checklist.length; i++) ...[
+            _GeneratedChecklistRow(
               index: i,
-              text: steps[i],
+              item: checklist[i],
               done: done.contains(i),
               onTap: () => onToggleStep(i),
             ),
@@ -4619,17 +4663,332 @@ class _DetectedItemsList extends StatelessWidget {
   }
 }
 
-class _FinalPlanPayloadCard extends StatelessWidget {
-  const _FinalPlanPayloadCard({required this.value});
+class _GeneratedFloorPlanView extends StatelessWidget {
+  const _GeneratedFloorPlanView({required this.plan});
 
-  final Object value;
+  final _GeneratedFloorPlan plan;
+
+  @override
+  Widget build(BuildContext context) {
+    return AspectRatio(
+      aspectRatio: plan.width / plan.height,
+      child: CustomPaint(
+        painter: _GeneratedFloorGridPainter(),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return Stack(
+              children: [
+                for (final item in plan.items)
+                  Positioned(
+                    left: constraints.maxWidth * (item.x / 100),
+                    top: constraints.maxHeight * (item.y / 100),
+                    width: constraints.maxWidth * (item.width / 100),
+                    height: constraints.maxHeight * (item.height / 100),
+                    child: _GeneratedFloorPlanItem(item: item),
+                  ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _GeneratedFloorGridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bg = Paint()..color = AppColors.surface;
+    final border = Paint()
+      ..color = AppColors.border2
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+    final grid = Paint()
+      ..color = AppColors.border.withValues(alpha: .55)
+      ..strokeWidth = 1;
+    final r = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      const Radius.circular(14),
+    );
+    canvas.drawRRect(r, bg);
+    for (var x = size.width / 12; x < size.width; x += size.width / 12) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), grid);
+    }
+    for (var y = size.height / 8; y < size.height; y += size.height / 8) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
+    }
+    canvas.drawRRect(r, border);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _GeneratedFloorPlanItem extends StatelessWidget {
+  const _GeneratedFloorPlanItem({required this.item});
+
+  final _GeneratedFloorItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final structural = item.status == 'structural' || item.fixed;
+    final moved = item.status == 'moved';
+    final border = structural
+        ? AppColors.ink3
+        : moved
+        ? AppColors.teal
+        : AppColors.warm;
+    final fill = structural
+        ? AppColors.surface3
+        : moved
+        ? AppColors.tealTint
+        : AppColors.warnTint;
+    return Transform.rotate(
+      angle: item.rotation * 3.141592653589793 / 180,
+      child: Container(
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        decoration: BoxDecoration(
+          color: fill,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: border, width: 2),
+        ),
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            item.name,
+            maxLines: 1,
+            style: AppText.xs(
+              color: structural ? AppColors.ink2 : AppColors.ink,
+              weight: FontWeight.w800,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MovedItemsList extends StatelessWidget {
+  const _MovedItemsList({required this.items});
+
+  final List<_GeneratedMovedItem> items;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        for (final item in items) ...[
+          RsCard(
+            padding: const EdgeInsets.all(13),
+            shadow: false,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(child: Text(item.name, style: AppText.h3())),
+                    const RsBadge(
+                      label: 'Moved',
+                      icon: Icons.open_in_full_rounded,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                if (item.fromTo != null)
+                  Text(item.fromTo!, style: AppText.xs(color: AppColors.ink2)),
+                if (item.reason != null) ...[
+                  const SizedBox(height: 4),
+                  Text(item.reason!, style: AppText.sm()),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ],
+    );
+  }
+}
+
+class _GeneratedChecklistRow extends StatelessWidget {
+  const _GeneratedChecklistRow({
+    required this.index,
+    required this.item,
+    required this.done,
+    required this.onTap,
+  });
+
+  final int index;
+  final _GeneratedChecklistItem item;
+  final bool done;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return RsCard(
       padding: const EdgeInsets.all(14),
-      shadow: false,
-      child: Text(_formatPlanValue(value), style: AppText.sm()),
+      onTap: onTap,
+      child: Row(
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: done ? AppColors.teal : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+              border: done
+                  ? null
+                  : Border.all(color: AppColors.border2, width: 2),
+            ),
+            child: done
+                ? const Icon(Icons.check_rounded, color: Colors.white, size: 15)
+                : Center(
+                    child: Text(
+                      '${index + 1}',
+                      style: AppText.xs(weight: FontWeight.w800),
+                    ),
+                  ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  item.title,
+                  style:
+                      AppText.sm(
+                        color: AppColors.ink,
+                        weight: FontWeight.w800,
+                      ).copyWith(
+                        decoration: done
+                            ? TextDecoration.lineThrough
+                            : TextDecoration.none,
+                      ),
+                ),
+                if (item.details != null) ...[
+                  const SizedBox(height: 3),
+                  Text(item.details!, style: AppText.xs(color: AppColors.ink2)),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GeneratedFloorPlan {
+  const _GeneratedFloorPlan({
+    required this.width,
+    required this.height,
+    required this.items,
+  });
+
+  final double width;
+  final double height;
+  final List<_GeneratedFloorItem> items;
+
+  static _GeneratedFloorPlan? fromMap(Map<dynamic, dynamic> map) {
+    final itemsRaw = map['items'];
+    final items = itemsRaw is Iterable
+        ? itemsRaw
+              .whereType<Map>()
+              .map((item) => _GeneratedFloorItem.fromMap(item))
+              .whereType<_GeneratedFloorItem>()
+              .toList()
+        : <_GeneratedFloorItem>[];
+    return _GeneratedFloorPlan(
+      width: _numOr(map['width'], 100).clamp(1, 100).toDouble(),
+      height: _numOr(map['height'], 100).clamp(1, 100).toDouble(),
+      items: items,
+    );
+  }
+}
+
+class _GeneratedFloorItem {
+  const _GeneratedFloorItem({
+    required this.name,
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    required this.rotation,
+    required this.status,
+    required this.fixed,
+  });
+
+  final String name;
+  final double x;
+  final double y;
+  final double width;
+  final double height;
+  final double rotation;
+  final String status;
+  final bool fixed;
+
+  static _GeneratedFloorItem? fromMap(Map<dynamic, dynamic> map) {
+    final name = _nonBlank(map['name']);
+    if (name == null) return null;
+    return _GeneratedFloorItem(
+      name: name,
+      x: _numOr(map['x'], 0).clamp(0, 100).toDouble(),
+      y: _numOr(map['y'], 0).clamp(0, 100).toDouble(),
+      width: _numOr(map['width'], 8).clamp(1, 100).toDouble(),
+      height: _numOr(map['height'], 8).clamp(1, 100).toDouble(),
+      rotation: _numOr(map['rotation'], 0),
+      status: _nonBlank(map['status']) ?? 'unchanged',
+      fixed: map['fixed'] == true,
+    );
+  }
+}
+
+class _GeneratedMovedItem {
+  const _GeneratedMovedItem({
+    required this.name,
+    this.from,
+    this.to,
+    this.reason,
+  });
+
+  final String name;
+  final String? from;
+  final String? to;
+  final String? reason;
+
+  String? get fromTo {
+    if (from == null && to == null) return null;
+    if (from == null) return 'To: $to';
+    if (to == null) return 'From: $from';
+    return '$from -> $to';
+  }
+
+  static _GeneratedMovedItem? fromMap(Map<dynamic, dynamic> map) {
+    final name = _nonBlank(map['name']);
+    if (name == null) return null;
+    return _GeneratedMovedItem(
+      name: name,
+      from: _nonBlank(map['from']),
+      to: _nonBlank(map['to']),
+      reason: _nonBlank(map['reason']),
+    );
+  }
+}
+
+class _GeneratedChecklistItem {
+  const _GeneratedChecklistItem({required this.title, this.details});
+
+  final String title;
+  final String? details;
+
+  static _GeneratedChecklistItem? fromMap(Map<dynamic, dynamic> map) {
+    final title = _nonBlank(map['title']) ?? _nonBlank(map['details']);
+    if (title == null) return null;
+    return _GeneratedChecklistItem(
+      title: title,
+      details: _nonBlank(map['details']),
     );
   }
 }
@@ -4669,48 +5028,9 @@ Map<String, dynamic>? _decodePlanJson(String? raw) {
   return null;
 }
 
-Object? _firstPlanValue(Map<String, dynamic>? plan, List<String> keys) {
-  if (plan == null) return null;
-  for (final key in keys) {
-    final value = plan[key];
-    if (value == null) continue;
-    if (value is String && value.trim().isEmpty) continue;
-    if (value is Iterable && value.isEmpty) continue;
-    if (value is Map && value.isEmpty) continue;
-    return value;
-  }
-  return null;
-}
-
-List<String> _stringListFromPlan(
-  Map<String, dynamic>? plan,
-  List<String> keys,
-) {
-  final value = _firstPlanValue(plan, keys);
-  if (value is Iterable) {
-    return value
-        .map((entry) {
-          if (entry is Map) {
-            return _nonBlank(
-              entry['name'] ??
-                  entry['label'] ??
-                  entry['item'] ??
-                  entry['title'],
-            );
-          }
-          return _nonBlank(entry);
-        })
-        .whereType<String>()
-        .toList();
-  }
-  if (value is String) return [_nonBlank(value)].whereType<String>().toList();
-  return const [];
-}
-
-String _formatPlanValue(Object value) {
-  if (value is String) return value;
-  const encoder = JsonEncoder.withIndent('  ');
-  return encoder.convert(value);
+double _numOr(Object? value, double fallback) {
+  if (value is num) return value.toDouble();
+  return double.tryParse(value?.toString() ?? '') ?? fallback;
 }
 
 class ChecklistRow extends StatelessWidget {

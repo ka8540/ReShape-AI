@@ -7,8 +7,11 @@ mocks to exercise success / specific failures. No real Gemini calls are made.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from app.models.detected_item import DetectedItem
 from app.models.generated_design import GeneratedDesign
 from app.models.media_asset import MediaAsset
 from app.services import ai_image_service, generation_service, r2_storage_service
@@ -44,6 +47,88 @@ def _add_design(db_session, project_id, **kwargs):
     db_session.commit()
     db_session.refresh(design)
     return design
+
+
+def _add_item(
+    db_session,
+    project_id,
+    name,
+    type_,
+    *,
+    fixed=False,
+    structural=False,
+):
+    item = DetectedItem(
+        project_id=project_id,
+        name=name,
+        type=type_,
+        confidence=0.9,
+        fixed=fixed,
+        structural=structural,
+    )
+    db_session.add(item)
+    db_session.commit()
+    db_session.refresh(item)
+    return item
+
+
+def _plan_json(*, sofa_id: str, window_id: str | None = None) -> str:
+    fixed_items = []
+    floor_items = [
+        {
+            "item_id": sofa_id,
+            "name": "Sofa",
+            "category": "sofa",
+            "x": 12,
+            "y": 58,
+            "width": 34,
+            "height": 12,
+            "rotation": 0,
+            "status": "moved",
+            "fixed": False,
+        }
+    ]
+    if window_id:
+        floor_items.append(
+            {
+                "item_id": window_id,
+                "name": "Window",
+                "category": "window",
+                "x": 45,
+                "y": 0,
+                "width": 20,
+                "height": 2,
+                "rotation": 0,
+                "status": "structural",
+                "fixed": True,
+            }
+        )
+        fixed_items.append(
+            {"item_id": window_id, "name": "Window", "reason": "structural item"}
+        )
+    return json.dumps(
+        {
+            "room_summary": "Approximate top-down plan based on the selected design.",
+            "floor_plan": {"width": 100, "height": 100, "items": floor_items},
+            "moved_items": [
+                {
+                    "item_id": sofa_id,
+                    "name": "Sofa",
+                    "from": "left wall",
+                    "to": "opposite wall",
+                    "reason": "opens a clearer walkway",
+                }
+            ],
+            "fixed_items": fixed_items,
+            "checklist": [
+                {
+                    "step": 1,
+                    "title": "Move the sofa",
+                    "details": "Keep clear of fixed structural items.",
+                }
+            ],
+        }
+    )
 
 
 def test_inline_mode_calls_shared_generation_job(client, auth_as, monkeypatch):
@@ -155,6 +240,197 @@ def test_successful_generation_uploads_and_saves_key(
     assert uploaded == [b"PNGDATA"]  # output image uploaded to R2
 
 
+def test_successful_generation_stores_structured_layout_plan(
+    client, db_session, auth_as, monkeypatch
+):
+    headers = auth_as("t-plan", uid="plan")
+    pid = _project(client, headers)
+    _add_reference_image(db_session, monkeypatch, pid)
+    sofa = _add_item(db_session, pid, "Sofa", "sofa")
+    window = _add_item(db_session, pid, "Window", "window", fixed=True, structural=True)
+
+    monkeypatch.setattr(
+        ai_image_service.AiImageService,
+        "generate",
+        lambda self, *, prompt, prompt_version, **kwargs: ai_image_service.ImageGenerationResult(
+            image_bytes=b"PNGDATA",
+            mime_type="image/png",
+            model_name="gemini-3.1-flash-image",
+            prompt_version=prompt_version,
+        ),
+    )
+    monkeypatch.setattr(
+        ai_image_service.AiImageService,
+        "generate_structured_move_plan",
+        lambda self, **kwargs: ai_image_service.StructuredMovePlanResult(
+            raw_json=_plan_json(sofa_id=sofa.id, window_id=window.id),
+            model_name="gemini-2.5-flash",
+        ),
+    )
+
+    client.post(f"/projects/{pid}/generate-layouts", json={"variants": 1}, headers=headers)
+    design = client.get(f"/projects/{pid}/designs", headers=headers).json()[0]
+    plan = json.loads(design["layout_plan_json"])
+
+    assert design["generation_status"] == "succeeded"
+    assert design["layout_plan_status"] == "succeeded"
+    assert design["layout_plan_error"] is None
+    assert plan["floor_plan"]["items"][0]["item_id"] == sofa.id
+    assert plan["moved_items"][0]["name"] == "Sofa"
+    assert plan["fixed_items"][0]["item_id"] == window.id
+
+
+def test_invalid_gemini_json_marks_layout_plan_failed_but_keeps_image(
+    client, db_session, auth_as, monkeypatch
+):
+    headers = auth_as("t-bad-plan", uid="bad-plan")
+    pid = _project(client, headers)
+    _add_reference_image(db_session, monkeypatch, pid)
+    _add_item(db_session, pid, "Chair", "chair")
+
+    monkeypatch.setattr(
+        ai_image_service.AiImageService,
+        "generate",
+        lambda self, *, prompt, prompt_version, **kwargs: ai_image_service.ImageGenerationResult(
+            image_bytes=b"PNGDATA",
+            mime_type="image/png",
+            model_name="gemini-3.1-flash-image",
+            prompt_version=prompt_version,
+        ),
+    )
+    monkeypatch.setattr(
+        ai_image_service.AiImageService,
+        "generate_structured_move_plan",
+        lambda self, **kwargs: ai_image_service.StructuredMovePlanResult(
+            raw_json="not json",
+            model_name="gemini-2.5-flash",
+        ),
+    )
+
+    client.post(f"/projects/{pid}/generate-layouts", json={"variants": 1}, headers=headers)
+    design = client.get(f"/projects/{pid}/designs", headers=headers).json()[0]
+
+    assert design["generation_status"] == "succeeded"
+    assert design["output_read_url"]
+    assert design["layout_plan_status"] == "failed"
+    assert "Structured move plan could not be generated" in design["layout_plan_error"]
+
+
+def test_design_detail_returns_structured_plan_json(client, db_session, auth_as):
+    headers = auth_as("t-detail-plan", uid="detail-plan")
+    pid = _project(client, headers)
+    sofa = _add_item(db_session, pid, "Sofa", "sofa")
+    design = _add_design(
+        db_session,
+        pid,
+        generation_status="succeeded",
+        output_image_key=f"{pid}/designs/out.png",
+        layout_plan_json=_plan_json(sofa_id=sofa.id),
+    )
+
+    body = client.get(f"/projects/{pid}/designs/{design.id}", headers=headers).json()
+    assert body["layout_plan_status"] == "succeeded"
+    assert json.loads(body["layout_plan_json"])["moved_items"][0]["item_id"] == sofa.id
+
+
+def test_final_plan_returns_selected_design_and_structured_plan(
+    client, db_session, auth_as
+):
+    headers = auth_as("t-final-plan", uid="final-plan")
+    pid = _project(client, headers)
+    sofa = _add_item(db_session, pid, "Sofa", "sofa")
+    design = _add_design(
+        db_session,
+        pid,
+        generation_status="succeeded",
+        output_image_key=f"{pid}/designs/out.png",
+        reference_image_key=f"{pid}/image/room.jpg",
+        layout_plan_json=_plan_json(sofa_id=sofa.id),
+    )
+
+    created = client.post(
+        f"/projects/{pid}/final-plan",
+        json={"selected_design_id": design.id, "plan_json": json.dumps({"fake": True})},
+        headers=headers,
+    )
+    assert created.status_code == 201
+    body = client.get(f"/projects/{pid}/final-plan", headers=headers).json()
+
+    assert body["selected_design_id"] == design.id
+    assert body["selected_design_output_read_url"]
+    assert body["selected_design_reference_read_url"]
+    assert body["layout_plan_status"] == "succeeded"
+    assert json.loads(body["layout_plan_json"])["moved_items"][0]["item_id"] == sofa.id
+    assert "fake" not in body["layout_plan_json"]
+
+
+def test_fixed_items_are_not_marked_as_moved(client, db_session, auth_as, monkeypatch):
+    headers = auth_as("t-fixed-plan", uid="fixed-plan")
+    pid = _project(client, headers)
+    _add_reference_image(db_session, monkeypatch, pid)
+    window = _add_item(db_session, pid, "Window", "window", fixed=True, structural=True)
+
+    monkeypatch.setattr(
+        ai_image_service.AiImageService,
+        "generate",
+        lambda self, *, prompt, prompt_version, **kwargs: ai_image_service.ImageGenerationResult(
+            image_bytes=b"PNGDATA",
+            mime_type="image/png",
+            model_name="gemini-3.1-flash-image",
+            prompt_version=prompt_version,
+        ),
+    )
+    monkeypatch.setattr(
+        ai_image_service.AiImageService,
+        "generate_structured_move_plan",
+        lambda self, **kwargs: ai_image_service.StructuredMovePlanResult(
+            raw_json=_plan_json(sofa_id=window.id),
+            model_name="gemini-2.5-flash",
+        ),
+    )
+
+    client.post(f"/projects/{pid}/generate-layouts", json={"variants": 1}, headers=headers)
+    design = client.get(f"/projects/{pid}/designs", headers=headers).json()[0]
+
+    assert design["generation_status"] == "succeeded"
+    assert design["layout_plan_status"] == "failed"
+    assert "Fixed item cannot be marked moved" in design["layout_plan_error"]
+
+
+def test_floor_plan_rejects_items_outside_current_project(
+    client, db_session, auth_as, monkeypatch
+):
+    headers = auth_as("t-unknown-plan", uid="unknown-plan")
+    pid = _project(client, headers)
+    _add_reference_image(db_session, monkeypatch, pid)
+    _add_item(db_session, pid, "Chair", "chair")
+
+    monkeypatch.setattr(
+        ai_image_service.AiImageService,
+        "generate",
+        lambda self, *, prompt, prompt_version, **kwargs: ai_image_service.ImageGenerationResult(
+            image_bytes=b"PNGDATA",
+            mime_type="image/png",
+            model_name="gemini-3.1-flash-image",
+            prompt_version=prompt_version,
+        ),
+    )
+    monkeypatch.setattr(
+        ai_image_service.AiImageService,
+        "generate_structured_move_plan",
+        lambda self, **kwargs: ai_image_service.StructuredMovePlanResult(
+            raw_json=_plan_json(sofa_id="not-a-project-item"),
+            model_name="gemini-2.5-flash",
+        ),
+    )
+
+    client.post(f"/projects/{pid}/generate-layouts", json={"variants": 1}, headers=headers)
+    design = client.get(f"/projects/{pid}/designs", headers=headers).json()[0]
+
+    assert design["layout_plan_status"] == "failed"
+    assert "outside this project" in design["layout_plan_error"]
+
+
 def test_generation_status_failed_when_all_failed(client, auth_as):
     headers = auth_as("t-stat", uid="stat")
     pid = _project(client, headers)  # no reference -> all fail
@@ -214,3 +490,27 @@ def test_cross_user_access_returns_404(client, db_session, auth_as):
         ).status_code
         == 404
     )
+
+
+def test_cross_user_final_plan_access_returns_404(client, db_session, auth_as):
+    alice = auth_as("t-final-alice", uid="final-alice", email="a@example.com")
+    pid = _project(client, alice)
+    sofa = _add_item(db_session, pid, "Sofa", "sofa")
+    design = _add_design(
+        db_session,
+        pid,
+        generation_status="succeeded",
+        output_image_key=f"{pid}/designs/out.png",
+        layout_plan_json=_plan_json(sofa_id=sofa.id),
+    )
+    assert (
+        client.post(
+            f"/projects/{pid}/final-plan",
+            json={"selected_design_id": design.id},
+            headers=alice,
+        ).status_code
+        == 201
+    )
+
+    bob = auth_as("t-final-bob", uid="final-bob", email="b@example.com")
+    assert client.get(f"/projects/{pid}/final-plan", headers=bob).status_code == 404

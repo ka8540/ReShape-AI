@@ -7,7 +7,7 @@ from app.models.design_item_change import DesignItemChange
 from app.models.generated_design import GeneratedDesign
 from app.models.project import Project
 from app.schemas.design import DesignCustomizeRequest
-from app.services import r2_storage_service
+from app.services import move_plan_service, r2_storage_service
 
 
 def get_owned(db: Session, project: Project, design_id: str) -> GeneratedDesign:
@@ -32,6 +32,18 @@ def with_signed_urls(design: GeneratedDesign) -> dict:
             r2_storage_service.read_url(storage_key=design.reference_image_key)
             if design.reference_image_key
             else None
+        ),
+    }
+
+
+def with_layout_plan(design: GeneratedDesign) -> dict:
+    return {
+        "layout_plan_json": design.layout_plan_json,
+        "layout_plan_status": move_plan_service.layout_plan_status(
+            design.layout_plan_json
+        ),
+        "layout_plan_error": move_plan_service.layout_plan_error(
+            design.layout_plan_json
         ),
     }
 

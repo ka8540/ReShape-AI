@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -26,11 +28,17 @@ Map<String, dynamic> _designDetail(
   String id, {
   String? outputUrl,
   String? referenceUrl,
+  String? planJson,
+  String? planStatus,
+  String? planError,
 }) {
   return {
     ..._designRow(id),
     'output_read_url': outputUrl,
     'reference_read_url': referenceUrl,
+    'layout_plan_json': planJson,
+    'layout_plan_status': planStatus,
+    'layout_plan_error': planError,
   };
 }
 
@@ -71,9 +79,74 @@ Map<String, dynamic> _savedPlan({String? planJson}) {
     'project_id': 'p1',
     'selected_design_id': 'd1',
     'plan_json': planJson,
+    'layout_plan_json': planJson,
+    'layout_plan_status': planJson == null ? null : 'succeeded',
+    'layout_plan_error': null,
+    'selected_design_output_read_url': null,
+    'selected_design_reference_read_url': null,
     'export_status': 'none',
     'export_url': null,
   };
+}
+
+String _planJson({
+  String itemName = 'Chair',
+  String itemId = 'i1',
+  bool includeDesk = false,
+}) {
+  return jsonEncode({
+    'room_summary': 'Approximate plan from the selected generated layout.',
+    'floor_plan': {
+      'width': 100,
+      'height': 100,
+      'items': [
+        {
+          'item_id': itemId,
+          'name': itemName,
+          'category': itemName.toLowerCase(),
+          'x': 12,
+          'y': 58,
+          'width': 34,
+          'height': 12,
+          'rotation': 0,
+          'status': 'moved',
+          'fixed': false,
+        },
+        if (includeDesk)
+          {
+            'item_id': 'i-desk',
+            'name': 'Desk',
+            'category': 'desk',
+            'x': 5,
+            'y': 8,
+            'width': 20,
+            'height': 10,
+            'rotation': 0,
+            'status': 'moved',
+            'fixed': false,
+          },
+      ],
+    },
+    'moved_items': [
+      {
+        'item_id': itemId,
+        'name': itemName,
+        'from': 'left wall',
+        'to': 'window wall',
+        'reason': 'opens a clearer walkway',
+      },
+    ],
+    'fixed_items': [
+      {'item_id': 'i-window', 'name': 'Window', 'reason': 'structural item'},
+    ],
+    'checklist': [
+      {
+        'step': 1,
+        'title': 'Move the $itemName',
+        'details': 'Clear the walking path first.',
+      },
+    ],
+  });
 }
 
 class _FakeFinalPlanApi extends ApiService {
@@ -246,6 +319,80 @@ void main() {
     );
   });
 
+  testWidgets('Final Plan renders floor plan from backend JSON', (
+    tester,
+  ) async {
+    final planJson = _planJson(itemName: 'Armchair', itemId: 'i-armchair');
+    final api = _FakeFinalPlanApi(
+      designs: [_designRow('d1', selected: true)],
+      designDetails: {
+        'd1': _designDetail(
+          'd1',
+          outputUrl: 'https://cdn.example.com/generated.png',
+          planJson: planJson,
+          planStatus: 'succeeded',
+        ),
+      },
+      items: [_itemRow('i-armchair', 'Armchair', 'chair')],
+      finalPlan: _savedPlan(planJson: planJson),
+    );
+
+    await _pumpFinalPlan(tester, api);
+
+    expect(find.text('Floor plan'), findsOneWidget);
+    expect(find.text('Armchair'), findsWidgets);
+    expect(
+      find.text('Approximate plan from the selected generated layout.'),
+      findsOneWidget,
+    );
+    expect(find.byType(FloorPlanView), findsNothing);
+  });
+
+  testWidgets('Final Plan renders moved item chips from backend JSON', (
+    tester,
+  ) async {
+    final planJson = _planJson(itemName: 'Armchair', itemId: 'i-armchair');
+    final api = _FakeFinalPlanApi(
+      designs: [_designRow('d1', selected: true)],
+      designDetails: {
+        'd1': _designDetail(
+          'd1',
+          outputUrl: 'https://cdn.example.com/generated.png',
+          planJson: planJson,
+          planStatus: 'succeeded',
+        ),
+      },
+      finalPlan: _savedPlan(planJson: planJson),
+    );
+
+    await _pumpFinalPlan(tester, api);
+
+    expect(find.text('Moved'), findsOneWidget);
+    expect(find.text('left wall -> window wall'), findsOneWidget);
+    expect(find.text('opens a clearer walkway'), findsOneWidget);
+  });
+
+  testWidgets('Final Plan renders checklist from backend JSON', (tester) async {
+    final planJson = _planJson(itemName: 'Armchair', itemId: 'i-armchair');
+    final api = _FakeFinalPlanApi(
+      designs: [_designRow('d1', selected: true)],
+      designDetails: {
+        'd1': _designDetail(
+          'd1',
+          outputUrl: 'https://cdn.example.com/generated.png',
+          planJson: planJson,
+          planStatus: 'succeeded',
+        ),
+      },
+      finalPlan: _savedPlan(planJson: planJson),
+    );
+
+    await _pumpFinalPlan(tester, api);
+
+    expect(find.text('Move the Armchair'), findsOneWidget);
+    expect(find.text('Clear the walking path first.'), findsOneWidget);
+  });
+
   testWidgets(
     'Final Plan does not render fake floor plan labels in real mode',
     (tester) async {
@@ -258,7 +405,7 @@ void main() {
           ),
         },
         items: [_itemRow('i1', 'Chair', 'chair')],
-        finalPlan: _savedPlan(),
+        finalPlan: _savedPlan(planJson: _planJson(itemName: 'Chair')),
       );
 
       await _pumpFinalPlan(tester, api);
@@ -331,6 +478,49 @@ void main() {
       find.text('Selected layout has no generated image.'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('missing structured plan shows honest empty state', (
+    tester,
+  ) async {
+    final api = _FakeFinalPlanApi(
+      designs: [_designRow('d1', selected: true)],
+      designDetails: {
+        'd1': _designDetail(
+          'd1',
+          outputUrl: 'https://cdn.example.com/generated.png',
+        ),
+      },
+      finalPlan: _savedPlan(),
+    );
+
+    await _pumpFinalPlan(tester, api);
+
+    expect(
+      find.text('Structured move plan is not available yet.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('share/download does not pretend to export fake data', (
+    tester,
+  ) async {
+    final api = _FakeFinalPlanApi(
+      designs: [_designRow('d1', selected: true)],
+      designDetails: {
+        'd1': _designDetail(
+          'd1',
+          outputUrl: 'https://cdn.example.com/generated.png',
+        ),
+      },
+      finalPlan: _savedPlan(),
+    );
+
+    await _pumpFinalPlan(tester, api);
+    await tester.tap(find.byIcon(Icons.share_rounded));
+    await tester.pump();
+
+    expect(find.text('Export is not available yet.'), findsOneWidget);
   });
 
   testWidgets('mock data only appears when USE_MOCK_DATA=true', (tester) async {

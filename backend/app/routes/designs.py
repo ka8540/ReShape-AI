@@ -21,6 +21,7 @@ def list_designs(
         DesignWithUrls(
             **DesignOut.model_validate(d).model_dump(),
             **design_service.with_signed_urls(d),
+            **design_service.with_layout_plan(d),
         )
         for d in generation_service.list_designs(db, project)
     ]
@@ -34,7 +35,11 @@ def get_design(
 ) -> DesignWithUrls:
     design = design_service.get_owned(db, project, design_id)
     base = DesignOut.model_validate(design).model_dump()
-    return DesignWithUrls(**base, **design_service.with_signed_urls(design))
+    return DesignWithUrls(
+        **base,
+        **design_service.with_signed_urls(design),
+        **design_service.with_layout_plan(design),
+    )
 
 
 @router.post("/{design_id}/select", response_model=DesignOut)

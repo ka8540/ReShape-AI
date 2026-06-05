@@ -22,7 +22,7 @@ from app.models.generated_design import GeneratedDesign
 from app.models.media_asset import MediaAsset
 from app.models.project import Project
 from app.models.user import User
-from app.services import prompt_builder, r2_storage_service
+from app.services import move_plan_service, prompt_builder, r2_storage_service
 from app.services.ai_image_service import (
     AiImageService,
     ImageGenerationFailure,
@@ -136,7 +136,7 @@ def run_generation_job(design_ids: list[str], db: Session | None = None) -> None
             )
             return
 
-        ref_bytes, ref_mime = reference
+        ref_bytes, ref_mime, ref_key = reference
         prompt = _build_prompt(project)
         service = AiImageService(settings)
 
@@ -184,8 +184,18 @@ def run_generation_job(design_ids: list[str], db: Session | None = None) -> None
                 continue
 
             design.output_image_key = storage_key
+            design.reference_image_key = ref_key
             design.model_name = result.model_name
             design.prompt_version = result.prompt_version
+            design.layout_plan_json = _generate_structured_move_plan(
+                service=service,
+                project=project,
+                design=design,
+                reference_image_bytes=ref_bytes,
+                reference_image_mime=ref_mime,
+                generated_image_bytes=result.image_bytes,
+                generated_image_mime=result.mime_type,
+            )
             design.generation_status = "succeeded"
             design.error_code = None
             design.error_message = None
@@ -200,9 +210,7 @@ def run_generation_job(design_ids: list[str], db: Session | None = None) -> None
             db.close()
 
 
-def _load_reference_image(
-    db: Session, project: Project
-) -> tuple[bytes, str] | None:
+def _load_reference_image(db: Session, project: Project) -> tuple[bytes, str, str] | None:
     asset = (
         db.query(MediaAsset)
         .filter(
@@ -218,7 +226,41 @@ def _load_reference_image(
     data = r2_storage_service.get_object(storage_key=asset.storage_key)
     if not data:
         return None
-    return data, asset.mime_type or "image/jpeg"
+    return data, asset.mime_type or "image/jpeg", asset.storage_key
+
+
+def _generate_structured_move_plan(
+    *,
+    service: AiImageService,
+    project: Project,
+    design: GeneratedDesign,
+    reference_image_bytes: bytes,
+    reference_image_mime: str,
+    generated_image_bytes: bytes,
+    generated_image_mime: str,
+) -> str:
+    prompt = move_plan_service.build_prompt(project, design)
+    result = service.generate_structured_move_plan(
+        prompt=prompt,
+        reference_image_bytes=reference_image_bytes,
+        reference_image_mime=reference_image_mime,
+        generated_image_bytes=generated_image_bytes,
+        generated_image_mime=generated_image_mime,
+    )
+    if isinstance(result, ImageGenerationFailure):
+        _, message = _friendly_failure(result)
+        logger.warning("Structured move plan failed design=%s: %s", design.id, message)
+        return move_plan_service.failure_plan_json(message)
+    try:
+        return move_plan_service.normalize_plan(
+            result.raw_json,
+            list(project.detected_items),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Structured move plan JSON invalid design=%s: %s", design.id, exc)
+        return move_plan_service.failure_plan_json(
+            f"Structured move plan could not be generated: {exc}"
+        )
 
 
 def _build_prompt(project: Project) -> str:

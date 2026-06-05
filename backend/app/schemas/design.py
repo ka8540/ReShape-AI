@@ -20,6 +20,9 @@ class DesignOut(ORMModel):
 class DesignWithUrls(DesignOut):
     output_read_url: str | None = None
     reference_read_url: str | None = None
+    layout_plan_json: str | None = None
+    layout_plan_status: str | None = None
+    layout_plan_error: str | None = None
 
 
 class DesignCustomizeRequest(BaseModel):

@@ -16,7 +16,8 @@ def create_final_plan(
     project: Project = Depends(verify_project_owner),
     db: Session = Depends(get_db),
 ) -> FinalPlanOut:
-    return FinalPlanOut.model_validate(final_plan_service.create_or_update(db, project, payload))
+    plan = final_plan_service.create_or_update(db, project, payload)
+    return final_plan_service.to_out(db, plan)
 
 
 @router.get("", response_model=FinalPlanOut)
@@ -27,7 +28,7 @@ def get_final_plan(
     plan = final_plan_service.get(db, project)
     if plan is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No final plan set")
-    return FinalPlanOut.model_validate(plan)
+    return final_plan_service.to_out(db, plan)
 
 
 @router.post("/export", response_model=FinalPlanOut, status_code=status.HTTP_202_ACCEPTED)
@@ -36,6 +37,5 @@ def export_final_plan(
     project: Project = Depends(verify_project_owner),
     db: Session = Depends(get_db),
 ) -> FinalPlanOut:
-    return FinalPlanOut.model_validate(
-        final_plan_service.request_export(db, project, payload.format)
-    )
+    plan = final_plan_service.request_export(db, project, payload.format)
+    return final_plan_service.to_out(db, plan)
