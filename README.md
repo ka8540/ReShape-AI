@@ -449,6 +449,20 @@ flutter run --debug \
   --dart-define=ENABLE_FIREBASE=true
 ```
 
+> **iOS Simulator + Firebase — use `mobile/run-sim.sh`.** Plain `flutter run`
+> builds the simulator app with code signing disabled, so the
+> `keychain-access-groups` entitlement never embeds and Firebase Auth fails with
+> *"An error occurred when accessing the keychain."* The helper builds via
+> `xcodebuild` (ad-hoc signing on → entitlement embeds) and then hands the app to
+> `flutter run --use-application-binary` for install + hot reload:
+>
+> ```bash
+> cd mobile && ./run-sim.sh
+> ```
+>
+> The repo must also live **outside iCloud Drive** (not `~/Desktop` /
+> `~/Documents`), or codesign fails with *"resource fork … detritus not allowed."*
+
 Three compile-time flags drive runtime behaviour (`mobile/lib/services/api_config.dart`):
 
 | Flag | Default | Effect |
@@ -603,8 +617,12 @@ Redesign mode (new furniture, shopping flows), product recommendations + marketp
 | R2 PUT returns 403 / SignatureDoesNotMatch | Wrong `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` or the bucket name/endpoint doesn't match the credentials. |
 | `ALL_MODELS_FAILED` on generation | The current `GEMINI_IMAGE_MODEL` and both fallbacks rejected the call. Try `gemini-2.5-flash-image` as `GEMINI_IMAGE_MODEL` and check API key permissions. |
 | Worker doesn't pick up jobs | Celery isn't running, or `REDIS_URL` is wrong. With Celery off, enqueue calls fall back to in-process logs (visible in API logs). |
-| `psycopg2.OperationalError` | Postgres not running or `DATABASE_URL` mistyped. Switch to the SQLite fallback by setting `DATABASE_URL=sqlite:///./respace.db`. |
-| Flutter iOS build: `Command CodeSign failed` "detritus not allowed" | Extended attributes on the build artifacts. Run `xattr -cr mobile/` and `flutter clean`, then `flutter run` again. |
+| `psycopg2.OperationalError: connection refused` | Postgres (and Redis, for workers) not running. Start them: `brew services start postgresql@14 && brew services start redis`, then `createdb respace`. Note: `backend/.env` sets `DATABASE_URL` to Postgres, so the code's SQLite default does **not** kick in unless you set `DATABASE_URL=sqlite:///./respace.db`. |
+| `pod install` crashes: `Unicode Normalization not appropriate for ASCII-8BIT` | Non-UTF-8 shell locale. Export `LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8` before `pod install` / `flutter run`. (`mobile/run-sim.sh` already does this.) |
+| iOS build: `Swift Compiler Error: No such module 'AppAuth'` | GoogleSignIn's Swift pod `GTMAppAuth` can't `import AppAuth` under plain dynamic `use_frameworks!` (AppAuth 1.7.x / GoogleSignIn 8.x). Fixed in `mobile/ios/Podfile` with `use_frameworks! :linkage => :static` + `use_modular_headers!`, then a clean `pod install` (`rm -rf Pods Podfile.lock && pod install`). |
+| iOS build: `Command CodeSign failed` — *"resource fork, Finder information, or similar detritus not allowed"* | The repo is in an **iCloud-synced** folder (`~/Desktop` / `~/Documents`); iCloud stamps build artifacts with xattrs codesign rejects. **Durable fix:** move the repo outside iCloud (e.g. `~/Developer`). One-off patch: `xattr -cr mobile/ && flutter clean`. |
+| iOS Simulator: Firebase Auth *"An error occurred when accessing the keychain"* | `flutter run` disables code signing for the simulator, so the `keychain-access-groups` entitlement never embeds. Run via `mobile/run-sim.sh`, which builds with `xcodebuild` (ad-hoc signing on) so the entitlement embeds and the keychain works. |
+| App shows *"Authentication disabled"* | Built without `--dart-define=ENABLE_FIREBASE=true`. Add the flag (or use `run-sim.sh`, which sets it). |
 | Android Gradle plugin / Firebase mismatch | Re-run `flutterfire configure`; ensure `google-services.json` matches your Firebase Android app. |
 | CORS / wrong base URL | Pass `--dart-define=API_BASE_URL=...` when running Flutter, and confirm the backend is reachable from your device/emulator. |
 
