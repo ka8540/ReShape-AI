@@ -126,6 +126,11 @@ class ApiService {
     );
   }
 
+  Future<List<Map<String, dynamic>>> listMedia(String projectId) async {
+    final res = await _dio.get<dynamic>('/projects/$projectId/media');
+    return _asList(res.data);
+  }
+
   Future<Map<String, dynamic>> getReadUrl({
     required String projectId,
     required String mediaId,

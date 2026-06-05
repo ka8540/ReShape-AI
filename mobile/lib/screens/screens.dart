@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -3812,13 +3813,30 @@ class FinalPlanScreen extends ConsumerStatefulWidget {
 class _FinalPlanScreenState extends ConsumerState<FinalPlanScreen> {
   final done = <int>{};
   bool after = true;
+  _FinalPlanPhase _phase = _FinalPlanPhase.loading;
+  _FinalPlanData? _data;
+  String? _error;
+
+  bool get _isRealMode => !useMockData;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_isRealMode) _loadRealFinalPlan();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final project = ref.watch(projectControllerProvider);
+    if (_isRealMode) return _buildReal(context);
+    return _buildMock(context, project);
+  }
+
+  Widget _buildMock(BuildContext context, ProjectState project) {
     final result = selectedResult(project);
     final progress = done.length / result.steps.length;
-    // Use the real generated image of the layout the user selected, if any.
     final selectedDesigns = project.designs
         .where((d) => d.id == project.selectedDesignId && d.imageUrl != null)
         .toList();
@@ -4044,6 +4062,655 @@ class _FinalPlanScreenState extends ConsumerState<FinalPlanScreen> {
       ),
     );
   }
+
+  Widget _buildReal(BuildContext context) {
+    return PageShell(
+      bottom: BottomBar(
+        child: Row(
+          children: [
+            Expanded(
+              child: RsButton(
+                label: '',
+                icon: Icons.share_rounded,
+                variant: RsButtonVariant.ghost,
+                onPressed: _showExportUnavailable,
+              ),
+            ),
+            const SizedBox(width: 9),
+            Expanded(
+              child: RsButton(
+                label: '',
+                icon: Icons.download_rounded,
+                variant: RsButtonVariant.ghost,
+                onPressed: _showExportUnavailable,
+              ),
+            ),
+            const SizedBox(width: 9),
+            Expanded(
+              flex: 3,
+              child: RsButton(
+                label: 'Done',
+                icon: Icons.check_rounded,
+                onPressed: _completeRealFinalPlan,
+              ),
+            ),
+          ],
+        ),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+            child: Row(
+              children: [
+                RoundIconButton(
+                  icon: Icons.arrow_back_ios_new_rounded,
+                  onTap: () => context.go('/results'),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Final plan - Step 7 of ${reshuffleSteps.length}',
+                    style: AppText.xs(weight: FontWeight.w700),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const RsStepper(steps: reshuffleSteps, current: 6),
+          Expanded(child: _realBody()),
+        ],
+      ),
+    );
+  }
+
+  Widget _realBody() {
+    switch (_phase) {
+      case _FinalPlanPhase.loading:
+        return const _ResultsLoading(message: 'Loading your final plan…');
+      case _FinalPlanPhase.failed:
+        return _ResultsMessage(
+          icon: Icons.error_outline_rounded,
+          title: 'Final plan unavailable',
+          body: _error ?? 'Something went wrong while loading the final plan.',
+          actionLabel: 'Try again',
+          onAction: _loadRealFinalPlan,
+        );
+      case _FinalPlanPhase.ready:
+        final data = _data;
+        if (data == null) {
+          return const _ResultsMessage(
+            icon: Icons.error_outline_rounded,
+            title: 'Final plan unavailable',
+            body: 'Final plan data is missing.',
+          );
+        }
+        return _FinalPlanRealBody(
+          data: data,
+          after: after,
+          done: done,
+          onToggleImage: (value) => setState(() => after = value),
+          onToggleStep: (index) {
+            setState(
+              () => done.contains(index) ? done.remove(index) : done.add(index),
+            );
+          },
+        );
+    }
+  }
+
+  Future<void> _loadRealFinalPlan() async {
+    setState(() {
+      _phase = _FinalPlanPhase.loading;
+      _error = null;
+    });
+    final project = ref.read(projectControllerProvider);
+    final projectId = project.remoteProjectId;
+    if (projectId == null) {
+      if (!mounted) return;
+      setState(() {
+        _data = const _FinalPlanData(
+          projectId: null,
+          items: [],
+          finalPlan: null,
+        );
+        _phase = _FinalPlanPhase.ready;
+      });
+      return;
+    }
+
+    try {
+      final api = ref.read(apiServiceProvider);
+      final finalPlan = await api.getFinalPlan(projectId);
+      final items = (await api.listItems(projectId))
+          .map(DetectedItem.fromJson)
+          .where((item) => item.id.isNotEmpty)
+          .toList();
+      ref.read(projectControllerProvider.notifier).setItems(items);
+
+      final designs = await api.listDesigns(projectId);
+      final views = designs
+          .map((row) => GeneratedDesignView.fromJson(row))
+          .toList();
+      ref.read(projectControllerProvider.notifier).setDesigns(views);
+
+      String? selectedDesignId = project.selectedDesignId;
+      selectedDesignId ??= _selectedDesignIdFromRows(designs);
+      selectedDesignId ??= _nonBlank(finalPlan?['selected_design_id']);
+      if (selectedDesignId != null) {
+        ref
+            .read(projectControllerProvider.notifier)
+            .setSelectedDesign(selectedDesignId);
+      }
+
+      Map<String, dynamic>? selectedDesign;
+      if (selectedDesignId != null) {
+        selectedDesign = await api.getDesign(
+          projectId: projectId,
+          designId: selectedDesignId,
+        );
+      }
+
+      final afterImageUrl = _realImageUrl(selectedDesign?['output_read_url']);
+      final referenceImageUrl = _realImageUrl(
+        selectedDesign?['reference_read_url'],
+      );
+      final beforeImageUrl = await _loadBeforeImageUrl(
+        api: api,
+        projectId: projectId,
+        referenceImageUrl: referenceImageUrl,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        done.clear();
+        _data = _FinalPlanData(
+          projectId: projectId,
+          selectedDesignId: selectedDesignId,
+          beforeImageUrl: beforeImageUrl,
+          afterImageUrl: afterImageUrl,
+          items: items,
+          finalPlan: finalPlan,
+        );
+        _phase = _FinalPlanPhase.ready;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e is ApiException ? e.message : '$e';
+        _phase = _FinalPlanPhase.failed;
+      });
+    }
+  }
+
+  Future<String?> _loadBeforeImageUrl({
+    required ApiService api,
+    required String projectId,
+    required String? referenceImageUrl,
+  }) async {
+    try {
+      final mediaRows = await api.listMedia(projectId);
+      for (final row in mediaRows) {
+        final id = _nonBlank(row['id']);
+        final kind = _nonBlank(row['media_kind']);
+        final status = _nonBlank(row['upload_status']);
+        if (id == null || kind != 'image' || status != 'uploaded') continue;
+        final read = await api.getReadUrl(projectId: projectId, mediaId: id);
+        final url = _realImageUrl(read['read_url']);
+        if (url != null) return url;
+      }
+    } catch (_) {
+      // Fall back to the selected design's reference frame URL below.
+    }
+    return referenceImageUrl;
+  }
+
+  Future<void> _completeRealFinalPlan() async {
+    final data = _data;
+    if (_phase == _FinalPlanPhase.loading || data == null) {
+      _showSnack('Final plan is still loading.');
+      return;
+    }
+    if (data.projectId == null) {
+      _showSnack('No backend project is available for the final plan.');
+      return;
+    }
+    if (data.selectedDesignId == null) {
+      _showSnack('No generated layout selected yet.');
+      return;
+    }
+    if (data.afterImageUrl == null) {
+      _showSnack('Selected layout has no generated image.');
+      return;
+    }
+    try {
+      await ref
+          .read(apiServiceProvider)
+          .saveFinalPlan(
+            projectId: data.projectId!,
+            selectedDesignId: data.selectedDesignId!,
+            planJson: data.planJson,
+          );
+      if (mounted) context.go('/home');
+    } catch (e) {
+      _showSnack(
+        'Could not save final plan: ${e is ApiException ? e.message : e}',
+      );
+    }
+  }
+
+  void _showExportUnavailable() => _showSnack('Export is not available yet.');
+
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+enum _FinalPlanPhase { loading, ready, failed }
+
+class _FinalPlanData {
+  const _FinalPlanData({
+    required this.projectId,
+    required this.items,
+    required this.finalPlan,
+    this.selectedDesignId,
+    this.beforeImageUrl,
+    this.afterImageUrl,
+  });
+
+  final String? projectId;
+  final String? selectedDesignId;
+  final String? beforeImageUrl;
+  final String? afterImageUrl;
+  final List<DetectedItem> items;
+  final Map<String, dynamic>? finalPlan;
+
+  bool get hasSavedPlan => finalPlan != null;
+  String? get planJson => _nonBlank(finalPlan?['plan_json']);
+  Map<String, dynamic>? get planMap => _decodePlanJson(planJson);
+  List<String> get moveSteps => _stringListFromPlan(planMap, const [
+    'steps',
+    'move_steps',
+    'checklist',
+    'instructions',
+  ]);
+  List<String> get movedItems => _stringListFromPlan(planMap, const [
+    'moved_items',
+    'movedItems',
+    'changed_items',
+    'item_changes',
+  ]);
+  Object? get structuredPlan => _firstPlanValue(planMap, const [
+    'layout_plan',
+    'structured_layout',
+    'floor_plan',
+    'move_plan',
+  ]);
+}
+
+class _FinalPlanRealBody extends StatelessWidget {
+  const _FinalPlanRealBody({
+    required this.data,
+    required this.after,
+    required this.done,
+    required this.onToggleImage,
+    required this.onToggleStep,
+  });
+
+  final _FinalPlanData data;
+  final bool after;
+  final Set<int> done;
+  final ValueChanged<bool> onToggleImage;
+  final ValueChanged<int> onToggleStep;
+
+  @override
+  Widget build(BuildContext context) {
+    final steps = data.moveSteps;
+    final progress = steps.isEmpty ? 0.0 : done.length / steps.length;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 22),
+      children: [
+        _FinalPlanStatusNotice(data: data),
+        const SizedBox(height: 10),
+        Text('Your move plan', style: AppText.h1()),
+        const SizedBox(height: 14),
+        RsCard(
+          clip: Clip.antiAlias,
+          child: Column(
+            children: [
+              _FinalPlanImageSlot(
+                url: after ? data.afterImageUrl : data.beforeImageUrl,
+                message: after
+                    ? _afterMissingMessage(data)
+                    : 'Original room image is unavailable.',
+              ),
+              Padding(
+                padding: const EdgeInsets.all(7),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: RsButton(
+                        label: 'Before',
+                        compact: true,
+                        variant: after
+                            ? RsButtonVariant.quiet
+                            : RsButtonVariant.soft,
+                        onPressed: () => onToggleImage(false),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: RsButton(
+                        label: 'After',
+                        compact: true,
+                        variant: after
+                            ? RsButtonVariant.soft
+                            : RsButtonVariant.quiet,
+                        onPressed: () => onToggleImage(true),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 18),
+        Text('Detected items', style: AppText.h2().copyWith(fontSize: 17)),
+        const SizedBox(height: 8),
+        if (data.items.isEmpty)
+          const RsNotice(
+            text: 'No detected items were returned by the backend.',
+          )
+        else
+          _DetectedItemsList(items: data.items),
+        const SizedBox(height: 18),
+        Text(
+          'Structured move plan',
+          style: AppText.h2().copyWith(fontSize: 17),
+        ),
+        const SizedBox(height: 8),
+        if (data.structuredPlan == null)
+          const RsNotice(text: 'Structured move plan is not available yet.')
+        else
+          _FinalPlanPayloadCard(value: data.structuredPlan!),
+        const SizedBox(height: 18),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Moved items',
+                style: AppText.h2().copyWith(fontSize: 17),
+              ),
+            ),
+            if (data.movedItems.isNotEmpty)
+              Text(
+                '${data.movedItems.length}',
+                style: AppText.sm(
+                  color: AppColors.teal,
+                  weight: FontWeight.w800,
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (data.movedItems.isEmpty)
+          const RsNotice(text: 'Moved item details are not available yet.')
+        else
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              for (final item in data.movedItems)
+                RsBadge(label: item, icon: Icons.open_in_full_rounded),
+            ],
+          ),
+        const SizedBox(height: 22),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Move checklist',
+                style: AppText.h2().copyWith(fontSize: 18),
+              ),
+            ),
+            if (steps.isNotEmpty)
+              Text(
+                '${done.length}/${steps.length}',
+                style: AppText.sm(
+                  color: AppColors.teal,
+                  weight: FontWeight.w800,
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (steps.isEmpty)
+          const RsNotice(text: 'Move checklist is not available yet.')
+        else ...[
+          LinearProgressIndicator(
+            value: progress,
+            minHeight: 8,
+            borderRadius: BorderRadius.circular(99),
+            color: AppColors.teal,
+            backgroundColor: AppColors.surface3,
+          ),
+          const SizedBox(height: 14),
+          for (var i = 0; i < steps.length; i++) ...[
+            ChecklistRow(
+              index: i,
+              text: steps[i],
+              done: done.contains(i),
+              onTap: () => onToggleStep(i),
+            ),
+            const SizedBox(height: 9),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
+class _FinalPlanStatusNotice extends StatelessWidget {
+  const _FinalPlanStatusNotice({required this.data});
+
+  final _FinalPlanData data;
+
+  @override
+  Widget build(BuildContext context) {
+    if (data.projectId == null) {
+      return const RsNotice(
+        text: 'No backend project is available for the final plan.',
+        warn: true,
+      );
+    }
+    if (!data.hasSavedPlan) {
+      return const RsNotice(text: 'Final plan has not been saved yet.');
+    }
+    return const Align(
+      alignment: Alignment.centerLeft,
+      child: RsBadge(
+        label: 'Final plan saved',
+        icon: Icons.check_rounded,
+        color: AppColors.ok,
+        background: AppColors.okTint,
+      ),
+    );
+  }
+}
+
+class _FinalPlanImageSlot extends StatelessWidget {
+  const _FinalPlanImageSlot({required this.url, required this.message});
+
+  final String? url;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    if (url == null) {
+      return Container(
+        height: 196,
+        width: double.infinity,
+        color: AppColors.surface3,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.all(20),
+        child: Text(
+          message,
+          style: AppText.sm(weight: FontWeight.w700),
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
+    return _DesignImage(url: url!, height: 196);
+  }
+}
+
+class _DetectedItemsList extends StatelessWidget {
+  const _DetectedItemsList({required this.items});
+
+  final List<DetectedItem> items;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        for (final item in items) ...[
+          RsCard(
+            padding: const EdgeInsets.all(13),
+            shadow: false,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(item.name, style: AppText.h3()),
+                      const SizedBox(height: 2),
+                      Text(item.type, style: AppText.xs()),
+                    ],
+                  ),
+                ),
+                RsBadge(
+                  label: item.structural
+                      ? 'Structural'
+                      : item.fixed
+                      ? 'Fixed'
+                      : 'Movable',
+                  icon: item.structural || item.fixed
+                      ? Icons.lock_rounded
+                      : Icons.open_in_full_rounded,
+                  background: item.structural || item.fixed
+                      ? AppColors.surface3
+                      : AppColors.tealTint,
+                  color: item.structural || item.fixed
+                      ? AppColors.ink2
+                      : AppColors.teal,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ],
+    );
+  }
+}
+
+class _FinalPlanPayloadCard extends StatelessWidget {
+  const _FinalPlanPayloadCard({required this.value});
+
+  final Object value;
+
+  @override
+  Widget build(BuildContext context) {
+    return RsCard(
+      padding: const EdgeInsets.all(14),
+      shadow: false,
+      child: Text(_formatPlanValue(value), style: AppText.sm()),
+    );
+  }
+}
+
+String _afterMissingMessage(_FinalPlanData data) {
+  if (data.selectedDesignId == null) return 'No generated layout selected yet.';
+  return 'Selected layout has no generated image.';
+}
+
+String? _selectedDesignIdFromRows(List<Map<String, dynamic>> rows) {
+  for (final row in rows) {
+    if (row['is_selected'] == true) return _nonBlank(row['id']);
+  }
+  return null;
+}
+
+String? _nonBlank(Object? value) {
+  final text = value?.toString().trim();
+  return text == null || text.isEmpty ? null : text;
+}
+
+String? _realImageUrl(Object? value) {
+  final url = _nonBlank(value);
+  if (url == null || url.startsWith('mock://')) return null;
+  return url;
+}
+
+Map<String, dynamic>? _decodePlanJson(String? raw) {
+  if (raw == null) return null;
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is Map<String, dynamic>) return decoded;
+    if (decoded is Map) return Map<String, dynamic>.from(decoded);
+  } catch (_) {
+    return null;
+  }
+  return null;
+}
+
+Object? _firstPlanValue(Map<String, dynamic>? plan, List<String> keys) {
+  if (plan == null) return null;
+  for (final key in keys) {
+    final value = plan[key];
+    if (value == null) continue;
+    if (value is String && value.trim().isEmpty) continue;
+    if (value is Iterable && value.isEmpty) continue;
+    if (value is Map && value.isEmpty) continue;
+    return value;
+  }
+  return null;
+}
+
+List<String> _stringListFromPlan(
+  Map<String, dynamic>? plan,
+  List<String> keys,
+) {
+  final value = _firstPlanValue(plan, keys);
+  if (value is Iterable) {
+    return value
+        .map((entry) {
+          if (entry is Map) {
+            return _nonBlank(
+              entry['name'] ??
+                  entry['label'] ??
+                  entry['item'] ??
+                  entry['title'],
+            );
+          }
+          return _nonBlank(entry);
+        })
+        .whereType<String>()
+        .toList();
+  }
+  if (value is String) return [_nonBlank(value)].whereType<String>().toList();
+  return const [];
+}
+
+String _formatPlanValue(Object value) {
+  if (value is String) return value;
+  const encoder = JsonEncoder.withIndent('  ');
+  return encoder.convert(value);
 }
 
 class ChecklistRow extends StatelessWidget {
