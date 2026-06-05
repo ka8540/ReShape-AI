@@ -66,16 +66,13 @@ def complete_upload(db: Session, project: Project, media_id: str) -> MediaAsset:
     db.commit()
     db.refresh(asset)
 
-    # Branch on media kind. Image uploads skip video frame extraction;
-    # video uploads enqueue a frame-extraction job (no-op stub for now).
-    if asset.media_kind == "video":
-        from app.workers.video_processing_worker import enqueue_frame_extraction
+    # Kick off detection. In local/dev this synthesises reviewable DetectedItem
+    # rows synchronously (real object detection is still a TODO); otherwise it
+    # hands off to the async worker pipeline. Imported here to avoid a circular
+    # import at module load time.
+    from app.services import detection_service
 
-        enqueue_frame_extraction(asset.id)
-    else:
-        from app.workers.image_processing_worker import enqueue_image_analysis
-
-        enqueue_image_analysis(asset.id)
+    detection_service.run_detection(db, project, asset)
     return asset
 
 

@@ -1732,27 +1732,84 @@ class ProcessingScreen extends ConsumerStatefulWidget {
 }
 
 class _ProcessingScreenState extends ConsumerState<ProcessingScreen> {
-  late Timer timer;
+  Timer? _anim;
+  Timer? _poll;
   double progress = .04;
+  bool _navigated = false;
+  bool _backendReady = false;
+
+  bool get _backendMode =>
+      !useMockData &&
+      ref.read(projectControllerProvider).remoteProjectId != null;
 
   @override
   void initState() {
     super.initState();
-    timer = Timer.periodic(const Duration(milliseconds: 240), (_) {
+    final backend = _backendMode;
+    // Visual progress animation.
+    _anim = Timer.periodic(const Duration(milliseconds: 240), (_) {
       if (!mounted) return;
       setState(() => progress = (progress + .045).clamp(0, 1));
-      if (progress >= 1) {
-        timer.cancel();
-        Future<void>.delayed(const Duration(milliseconds: 450), () {
-          if (mounted) context.go('/review');
-        });
+      // Mock flow: drive entirely off the animation. Backend flow: advance once
+      // the server reports items are ready (with the animation as a floor).
+      if (!backend && progress >= 1) {
+        _go();
+      } else if (backend && _backendReady && progress >= 1) {
+        _go();
       }
     });
+    if (backend) {
+      // Poll the real processing status; detection usually finished during
+      // /media/complete, so this resolves quickly.
+      _poll = Timer.periodic(
+        const Duration(milliseconds: 700),
+        (_) => _checkStatus(),
+      );
+      // Safety net so we never hang on this screen.
+      Future<void>.delayed(const Duration(seconds: 10), () {
+        if (mounted) _go();
+      });
+    }
+  }
+
+  Future<void> _checkStatus() async {
+    final projectId = ref.read(projectControllerProvider).remoteProjectId;
+    if (projectId == null) return;
+    try {
+      final res = await ref
+          .read(apiServiceProvider)
+          .processingStatus(projectId);
+      if (_reviewReady((res['status'] ?? '').toString())) {
+        _backendReady = true;
+        // Keep a minimum on-screen time so the animation doesn't flash by.
+        if (progress >= .5) _go();
+      }
+    } catch (_) {
+      // Transient errors: keep polling; the safety-net timer still applies.
+    }
+  }
+
+  static bool _reviewReady(String status) => const {
+    'awaiting_user_review',
+    'ready',
+    'review',
+    'detected',
+    'completed',
+    'complete',
+  }.contains(status);
+
+  void _go() {
+    if (_navigated || !mounted) return;
+    _navigated = true;
+    _anim?.cancel();
+    _poll?.cancel();
+    context.go('/review');
   }
 
   @override
   void dispose() {
-    timer.cancel();
+    _anim?.cancel();
+    _poll?.cancel();
     super.dispose();
   }
 
@@ -1938,16 +1995,147 @@ class _ProcessingRow extends StatelessWidget {
   }
 }
 
-class ReviewItemsScreen extends ConsumerWidget {
+class ReviewItemsScreen extends ConsumerStatefulWidget {
   const ReviewItemsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ReviewItemsScreen> createState() => _ReviewItemsScreenState();
+}
+
+class _ReviewItemsScreenState extends ConsumerState<ReviewItemsScreen> {
+  bool _loading = false;
+
+  /// True when we should talk to the backend rather than the local mock state.
+  bool get _backendMode =>
+      !useMockData &&
+      ref.read(projectControllerProvider).remoteProjectId != null;
+
+  @override
+  void initState() {
+    super.initState();
+    // Fetch the items the backend detected during processing.
+    if (_backendMode) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+    }
+  }
+
+  Future<void> _refresh() async {
+    final projectId = ref.read(projectControllerProvider).remoteProjectId;
+    if (projectId == null) return;
+    setState(() => _loading = true);
+    try {
+      final rows = await ref.read(apiServiceProvider).listItems(projectId);
+      ref
+          .read(projectControllerProvider.notifier)
+          .setItems(rows.map(DetectedItem.fromJson).toList());
+    } catch (e) {
+      _snack('Could not load items: ${_msg(e)}');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _retryProcessing() async {
+    final projectId = ref.read(projectControllerProvider).remoteProjectId;
+    if (projectId == null) return;
+    setState(() => _loading = true);
+    try {
+      await ref.read(apiServiceProvider).retryProcessing(projectId);
+    } catch (_) {
+      // Surface the failure via the follow-up refresh / empty state.
+    }
+    await _refresh();
+  }
+
+  Future<void> _delete(DetectedItem item) async {
+    final notifier = ref.read(projectControllerProvider.notifier);
+    if (!_backendMode) {
+      notifier.deleteItem(item.id);
+      return;
+    }
+    final projectId = ref.read(projectControllerProvider).remoteProjectId!;
+    notifier.deleteItem(item.id); // optimistic removal
+    try {
+      await ref
+          .read(apiServiceProvider)
+          .deleteItem(projectId: projectId, itemId: item.id);
+    } catch (e) {
+      await _refresh(); // restore server truth
+      _snack('Could not delete ${item.name}: ${_msg(e)}');
+    }
+  }
+
+  Future<void> _setFixed(DetectedItem item, bool fixed) async {
+    final notifier = ref.read(projectControllerProvider.notifier);
+    notifier.toggleFixed(item.id, fixed); // optimistic
+    if (!_backendMode) return;
+    final projectId = ref.read(projectControllerProvider).remoteProjectId!;
+    try {
+      await ref.read(apiServiceProvider).patchItem(
+        projectId: projectId,
+        itemId: item.id,
+        changes: {'fixed': fixed},
+      );
+    } catch (e) {
+      notifier.toggleFixed(item.id, !fixed); // revert
+      _snack('Could not update ${item.name}: ${_msg(e)}');
+    }
+  }
+
+  Future<void> _rename(DetectedItem item, String name) async {
+    final notifier = ref.read(projectControllerProvider.notifier);
+    notifier.renameItem(item.id, name); // optimistic
+    if (!_backendMode) return;
+    final projectId = ref.read(projectControllerProvider).remoteProjectId!;
+    try {
+      await ref.read(apiServiceProvider).patchItem(
+        projectId: projectId,
+        itemId: item.id,
+        changes: {'name': name},
+      );
+    } catch (e) {
+      await _refresh();
+      _snack('Could not rename item: ${_msg(e)}');
+    }
+  }
+
+  Future<void> _add(String name) async {
+    final notifier = ref.read(projectControllerProvider.notifier);
+    if (!_backendMode) {
+      notifier.addItem(name);
+      return;
+    }
+    final projectId = ref.read(projectControllerProvider).remoteProjectId!;
+    try {
+      await ref.read(apiServiceProvider).createItem(
+        projectId: projectId,
+        name: name,
+        type: name.toLowerCase().split(' ').first,
+      );
+      await _refresh();
+    } catch (e) {
+      _snack('Could not add $name: ${_msg(e)}');
+    }
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  String _msg(Object e) => e is ApiException ? e.message : '$e';
+
+  @override
+  Widget build(BuildContext context) {
     final project = ref.watch(projectControllerProvider);
-    final controller = ref.read(projectControllerProvider.notifier);
     final furniture = project.items.where((item) => !item.structural).toList();
     final structure = project.items.where((item) => item.structural).toList();
     final fixedCount = furniture.where((item) => item.fixed).length;
+    final isEmpty = project.items.isEmpty;
+    final showLoader = _loading && isEmpty;
+
     return PageShell(
       bottom: BottomBar(
         child: RsButton(
@@ -1964,120 +2152,150 @@ class ReviewItemsScreen extends ConsumerWidget {
             steps: reshuffleSteps,
           ),
           Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-              children: [
-                Text('Review detected items', style: AppText.h1()),
-                const SizedBox(height: 6),
-                Text(
-                  'Fix anything we got wrong, then mark what should stay put. Layouts always respect fixed items.',
-                  style: AppText.body(),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _StatCard(
-                        value: '${furniture.length}',
-                        label: 'items found',
-                        color: AppColors.teal,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _StatCard(
-                        value: '$fixedCount',
-                        label: 'marked fixed',
-                        color: AppColors.warmInk,
-                      ),
-                    ),
-                  ],
-                ),
-                const SectionLabel('Furniture and objects'),
-                for (final item in furniture) ...[
-                  ItemReviewCard(item: item),
-                  const SizedBox(height: 10),
-                ],
-                RsCard(
-                  padding: const EdgeInsets.all(15),
-                  shadow: false,
-                  onTap: () => _showAddItemSheet(context, controller),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.add_rounded, color: AppColors.teal),
-                      const SizedBox(width: 9),
-                      Text(
-                        'Add missing item',
-                        style: AppText.sm(
-                          color: AppColors.teal,
-                          weight: FontWeight.w700,
+            child: showLoader
+                ? const Center(
+                    child: CircularProgressIndicator(color: AppColors.teal),
+                  )
+                : RefreshIndicator(
+                    onRefresh: _backendMode ? _refresh : () async {},
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+                      children: [
+                        Text('Review detected items', style: AppText.h1()),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Fix anything we got wrong, then mark what should stay put. Layouts always respect fixed items.',
+                          style: AppText.body(),
                         ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SectionLabel('Room structure'),
-                RsCard(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 4,
-                  ),
-                  child: Column(
-                    children: [
-                      for (final item in structure)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 36,
-                                height: 36,
-                                decoration: BoxDecoration(
-                                  color: AppColors.surface3,
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Icon(
-                                  itemIcons[item.type],
-                                  color: AppColors.ink2,
-                                  size: 18,
-                                ),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _StatCard(
+                                value: '${furniture.length}',
+                                label: 'items found',
+                                color: AppColors.teal,
                               ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Text(
-                                  item.name,
-                                  style: AppText.h3().copyWith(fontSize: 14.5),
-                                ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _StatCard(
+                                value: '$fixedCount',
+                                label: 'marked fixed',
+                                color: AppColors.warmInk,
                               ),
-                              const RsBadge(
-                                label: 'Structure',
-                                icon: Icons.lock_rounded,
-                                background: AppColors.surface3,
-                                color: AppColors.ink2,
-                              ),
-                            ],
+                            ),
+                          ],
+                        ),
+                        if (isEmpty) ...[
+                          const SizedBox(height: 14),
+                          _EmptyItemsCard(
+                            onRetry: _backendMode ? _retryProcessing : null,
+                            onAdd: () => _showAddItemSheet(context),
                           ),
-                        ),
-                    ],
+                        ] else ...[
+                          const SectionLabel('Furniture and objects'),
+                          for (final item in furniture) ...[
+                            ItemReviewCard(
+                              item: item,
+                              onSetFixed: (fixed) => _setFixed(item, fixed),
+                              onDelete: () => _delete(item),
+                              onRename: (name) => _rename(item, name),
+                            ),
+                            const SizedBox(height: 10),
+                          ],
+                          RsCard(
+                            padding: const EdgeInsets.all(15),
+                            shadow: false,
+                            onTap: () => _showAddItemSheet(context),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(
+                                  Icons.add_rounded,
+                                  color: AppColors.teal,
+                                ),
+                                const SizedBox(width: 9),
+                                Text(
+                                  'Add missing item',
+                                  style: AppText.sm(
+                                    color: AppColors.teal,
+                                    weight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (structure.isNotEmpty) ...[
+                            const SectionLabel('Room structure'),
+                            RsCard(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 4,
+                              ),
+                              child: Column(
+                                children: [
+                                  for (final item in structure)
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 10,
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Container(
+                                            width: 36,
+                                            height: 36,
+                                            decoration: BoxDecoration(
+                                              color: AppColors.surface3,
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                            ),
+                                            child: Icon(
+                                              itemIcons[item.type],
+                                              color: AppColors.ink2,
+                                              size: 18,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: Text(
+                                              item.name,
+                                              style: AppText.h3().copyWith(
+                                                fontSize: 14.5,
+                                              ),
+                                            ),
+                                          ),
+                                          const RsBadge(
+                                            label: 'Structure',
+                                            icon: Icons.lock_rounded,
+                                            background: AppColors.surface3,
+                                            color: AppColors.ink2,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ],
+                    ),
                   ),
-                ),
-              ],
-            ),
           ),
         ],
       ),
     );
   }
 
-  void _showAddItemSheet(BuildContext context, ProjectController controller) {
+  void _showAddItemSheet(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadii.xl)),
       ),
-      builder: (context) {
+      builder: (sheetContext) {
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(18, 8, 18, 22),
@@ -2109,8 +2327,8 @@ class ReviewItemsScreen extends ConsumerWidget {
                         label: item,
                         icon: Icons.add_rounded,
                         onTap: () {
-                          controller.addItem(item);
-                          Navigator.pop(context);
+                          Navigator.pop(sheetContext);
+                          _add(item);
                         },
                       ),
                   ],
@@ -2120,6 +2338,56 @@ class ReviewItemsScreen extends ConsumerWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _EmptyItemsCard extends StatelessWidget {
+  const _EmptyItemsCard({this.onRetry, required this.onAdd});
+
+  final VoidCallback? onRetry;
+  final VoidCallback onAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    return RsCard(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        children: [
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              color: AppColors.tealTint,
+              borderRadius: BorderRadius.circular(17),
+            ),
+            child: const Icon(Icons.search_off_rounded, color: AppColors.teal),
+          ),
+          const SizedBox(height: 14),
+          Text('No items detected', style: AppText.h3()),
+          const SizedBox(height: 5),
+          Text(
+            'Add items manually or retry the scan.',
+            style: AppText.sm(),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          RsButton(
+            label: 'Add missing item',
+            icon: Icons.add_rounded,
+            onPressed: onAdd,
+          ),
+          if (onRetry != null) ...[
+            const SizedBox(height: 4),
+            RsButton(
+              label: 'Retry processing',
+              icon: Icons.refresh_rounded,
+              variant: RsButtonVariant.quiet,
+              onPressed: onRetry,
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -2152,14 +2420,22 @@ class _StatCard extends StatelessWidget {
   }
 }
 
-class ItemReviewCard extends ConsumerWidget {
-  const ItemReviewCard({super.key, required this.item});
+class ItemReviewCard extends StatelessWidget {
+  const ItemReviewCard({
+    super.key,
+    required this.item,
+    required this.onSetFixed,
+    required this.onDelete,
+    required this.onRename,
+  });
 
   final DetectedItem item;
+  final ValueChanged<bool> onSetFixed;
+  final VoidCallback onDelete;
+  final ValueChanged<String> onRename;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final controller = ref.read(projectControllerProvider.notifier);
+  Widget build(BuildContext context) {
     final accentBg = item.fixed ? AppColors.warmTint : AppColors.tealTint;
     final accentFg = item.fixed ? AppColors.warmInk : AppColors.tealInk;
     return RsCard(
@@ -2209,7 +2485,7 @@ class ItemReviewCard extends ConsumerWidget {
               ),
               IconButton(
                 visualDensity: VisualDensity.compact,
-                onPressed: () => _rename(context, controller),
+                onPressed: () => _rename(context),
                 icon: const Icon(
                   Icons.edit_rounded,
                   color: AppColors.ink2,
@@ -2218,7 +2494,7 @@ class ItemReviewCard extends ConsumerWidget {
               ),
               IconButton(
                 visualDensity: VisualDensity.compact,
-                onPressed: () => controller.deleteItem(item.id),
+                onPressed: onDelete,
                 icon: const Icon(
                   Icons.delete_outline_rounded,
                   color: AppColors.ink2,
@@ -2241,7 +2517,7 @@ class ItemReviewCard extends ConsumerWidget {
                     label: 'Movable',
                     icon: Icons.open_in_full_rounded,
                     selected: !item.fixed,
-                    onTap: () => controller.toggleFixed(item.id, false),
+                    onTap: () => onSetFixed(false),
                   ),
                 ),
                 Expanded(
@@ -2250,7 +2526,7 @@ class ItemReviewCard extends ConsumerWidget {
                     icon: Icons.lock_rounded,
                     selected: item.fixed,
                     warm: true,
-                    onTap: () => controller.toggleFixed(item.id, true),
+                    onTap: () => onSetFixed(true),
                   ),
                 ),
               ],
@@ -2261,30 +2537,27 @@ class ItemReviewCard extends ConsumerWidget {
     );
   }
 
-  Future<void> _rename(
-    BuildContext context,
-    ProjectController controller,
-  ) async {
+  Future<void> _rename(BuildContext context) async {
     final textController = TextEditingController(text: item.name);
     final value = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Rename item'),
         content: TextField(controller: textController, autofocus: true),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, textController.text),
+            onPressed: () => Navigator.pop(dialogContext, textController.text),
             child: const Text('Save'),
           ),
         ],
       ),
     );
     if (value != null && value.trim().isNotEmpty) {
-      controller.renameItem(item.id, value.trim());
+      onRename(value.trim());
     }
   }
 }

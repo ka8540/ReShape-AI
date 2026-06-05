@@ -155,6 +155,10 @@ class ProjectController extends StateNotifier<ProjectState> {
   void setMedia(SelectedMedia media) => state = state.copyWith(media: media);
   void clearMedia() => state = state.copyWith(clearMedia: true);
 
+  /// Replaces the item list with what the backend returned for this project.
+  void setItems(List<DetectedItem> items) =>
+      state = state.copyWith(items: items);
+
   void toggleSavedLayout(int id) {
     final s = Set<int>.from(state.savedLayoutIds);
     if (s.contains(id)) {

@@ -14,6 +14,12 @@ class Settings(BaseSettings):
 
     APP_ENV: str = "local"
 
+    # MVP object detection is not implemented yet. When enabled, /media/complete
+    # synthesises a small set of DetectedItem rows so the review flow is usable
+    # locally. Never fakes silently in production: it only runs when explicitly
+    # turned on OR when APP_ENV == "local" (see mock_detection_enabled).
+    USE_MOCK_DETECTION: bool = False
+
     # Firebase Authentication (verified server-side).
     FIREBASE_PROJECT_ID: str = ""
     FIREBASE_CREDENTIALS_PATH: str = "./firebase-service-account.json"
@@ -48,6 +54,13 @@ class Settings(BaseSettings):
         "video/mp4",
         "video/quicktime",
     )
+
+    @property
+    def mock_detection_enabled(self) -> bool:
+        """Run the synthetic fallback detector when explicitly enabled, or in
+        local dev. Production (APP_ENV != "local") must opt in via
+        USE_MOCK_DETECTION, so it never fabricates items silently."""
+        return self.USE_MOCK_DETECTION or self.APP_ENV == "local"
 
     @property
     def gemini_image_model_chain(self) -> list[str]:

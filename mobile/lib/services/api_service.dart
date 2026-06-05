@@ -177,6 +177,17 @@ class ApiService {
     return _asMap(res.data);
   }
 
+  Future<void> deleteItem({
+    required String projectId,
+    required String itemId,
+  }) async {
+    try {
+      await _dio.delete<dynamic>('/projects/$projectId/items/$itemId');
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
   // ----------------------------------------------------------- preferences
 
   Future<Map<String, dynamic>?> getPreferences(String projectId) async {

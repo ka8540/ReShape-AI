@@ -27,6 +27,21 @@ class DetectedItem {
     structural: structural,
     added: added,
   );
+
+  /// Builds an item from the backend `/projects/{id}/items` payload.
+  /// `added_by_user` maps to the UI's `added` flag.
+  factory DetectedItem.fromJson(Map<String, dynamic> json) {
+    final confidence = json['confidence'];
+    return DetectedItem(
+      id: (json['id'] ?? '').toString(),
+      name: (json['name'] ?? '').toString(),
+      type: (json['type'] ?? '').toString(),
+      confidence: confidence is num ? confidence.toDouble() : 1.0,
+      fixed: json['fixed'] == true,
+      structural: json['structural'] == true,
+      added: json['added_by_user'] == true,
+    );
+  }
 }
 
 class Goal {
