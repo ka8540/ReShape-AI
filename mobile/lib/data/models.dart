@@ -44,6 +44,55 @@ class DetectedItem {
   }
 }
 
+/// A generated reshuffle design returned by the backend `/designs` endpoints.
+/// `imageUrl` is the signed read URL from the design detail endpoint (null
+/// until the design has succeeded and produced an image).
+class GeneratedDesignView {
+  final String id;
+  final String status; // queued | processing | succeeded | failed | ...
+  final bool isSelected;
+  final String? imageUrl;
+  final String? errorMessage;
+
+  const GeneratedDesignView({
+    required this.id,
+    required this.status,
+    this.isSelected = false,
+    this.imageUrl,
+    this.errorMessage,
+  });
+
+  bool get isReady => status == 'succeeded';
+  bool get isFailed => status == 'failed';
+  bool get isPending =>
+      status == 'queued' ||
+      status == 'processing' ||
+      status == 'pending' ||
+      status == 'running';
+
+  GeneratedDesignView copyWith({String? imageUrl, bool? isSelected}) =>
+      GeneratedDesignView(
+        id: id,
+        status: status,
+        isSelected: isSelected ?? this.isSelected,
+        imageUrl: imageUrl ?? this.imageUrl,
+        errorMessage: errorMessage,
+      );
+
+  factory GeneratedDesignView.fromJson(
+    Map<String, dynamic> json, {
+    String? imageUrl,
+  }) {
+    return GeneratedDesignView(
+      id: (json['id'] ?? '').toString(),
+      status: (json['generation_status'] ?? 'unknown').toString(),
+      isSelected: json['is_selected'] == true,
+      imageUrl: imageUrl ?? json['output_read_url']?.toString(),
+      errorMessage: json['error_message']?.toString(),
+    );
+  }
+}
+
 class Goal {
   final String id;
   final String label;

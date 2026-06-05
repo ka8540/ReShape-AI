@@ -23,6 +23,9 @@ class ProjectState {
   final String? remoteProjectId;
   // The photo or video the user picked/captured for this project.
   final SelectedMedia? media;
+  // Generated layout designs returned by the backend, and the selected one.
+  final List<GeneratedDesignView> designs;
+  final String? selectedDesignId;
 
   const ProjectState({
     this.mode,
@@ -39,6 +42,8 @@ class ProjectState {
     this.modNote,
     this.remoteProjectId,
     this.media,
+    this.designs = const [],
+    this.selectedDesignId,
   });
 
   ProjectState copyWith({
@@ -57,6 +62,8 @@ class ProjectState {
     String? remoteProjectId,
     SelectedMedia? media,
     bool clearMedia = false,
+    List<GeneratedDesignView>? designs,
+    String? selectedDesignId,
   }) => ProjectState(
     mode: mode ?? this.mode,
     roomType: roomType ?? this.roomType,
@@ -72,6 +79,8 @@ class ProjectState {
     modNote: modNote ?? this.modNote,
     remoteProjectId: remoteProjectId ?? this.remoteProjectId,
     media: clearMedia ? null : (media ?? this.media),
+    designs: designs ?? this.designs,
+    selectedDesignId: selectedDesignId ?? this.selectedDesignId,
   );
 }
 
@@ -158,6 +167,14 @@ class ProjectController extends StateNotifier<ProjectState> {
   /// Replaces the item list with what the backend returned for this project.
   void setItems(List<DetectedItem> items) =>
       state = state.copyWith(items: items);
+
+  /// Stores the generated designs fetched from the backend.
+  void setDesigns(List<GeneratedDesignView> designs) =>
+      state = state.copyWith(designs: designs);
+
+  /// Records which generated design the user chose.
+  void setSelectedDesign(String? id) =>
+      state = state.copyWith(selectedDesignId: id);
 
   void toggleSavedLayout(int id) {
     final s = Set<int>.from(state.savedLayoutIds);
