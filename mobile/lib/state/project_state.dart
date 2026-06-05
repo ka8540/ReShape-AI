@@ -21,6 +21,8 @@ class ProjectState {
   final String? modNote;
   // Set when the user creates the project against the backend.
   final String? remoteProjectId;
+  // The photo or video the user picked/captured for this project.
+  final SelectedMedia? media;
 
   const ProjectState({
     this.mode,
@@ -36,6 +38,7 @@ class ProjectState {
     this.emptyState = true,
     this.modNote,
     this.remoteProjectId,
+    this.media,
   });
 
   ProjectState copyWith({
@@ -52,6 +55,8 @@ class ProjectState {
     bool? emptyState,
     String? modNote,
     String? remoteProjectId,
+    SelectedMedia? media,
+    bool clearMedia = false,
   }) => ProjectState(
     mode: mode ?? this.mode,
     roomType: roomType ?? this.roomType,
@@ -66,6 +71,7 @@ class ProjectState {
     emptyState: emptyState ?? this.emptyState,
     modNote: modNote ?? this.modNote,
     remoteProjectId: remoteProjectId ?? this.remoteProjectId,
+    media: clearMedia ? null : (media ?? this.media),
   );
 }
 
@@ -145,6 +151,9 @@ class ProjectController extends StateNotifier<ProjectState> {
 
   void setRemoteProjectId(String? id) =>
       state = state.copyWith(remoteProjectId: id);
+
+  void setMedia(SelectedMedia media) => state = state.copyWith(media: media);
+  void clearMedia() => state = state.copyWith(clearMedia: true);
 
   void toggleSavedLayout(int id) {
     final s = Set<int>.from(state.savedLayoutIds);

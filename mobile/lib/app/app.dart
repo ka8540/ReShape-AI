@@ -21,6 +21,21 @@ class ReSpaceApp extends ConsumerWidget {
         brightness: Brightness.light,
       ),
       useMaterial3: true,
+      // One consistent page transition across the whole app and every platform.
+      // Without this each platform picks its own default (Android's zoom/fade vs
+      // iOS's slide), which made flow navigation feel inconsistent. Pinning a
+      // single builder keeps every animated route identical. Bottom-tab pages
+      // opt out entirely via NoTransitionPage in the router.
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.windows: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.linux: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.fuchsia: CupertinoPageTransitionsBuilder(),
+        },
+      ),
     );
     final textTheme = GoogleFonts.interTextTheme(
       base.textTheme,

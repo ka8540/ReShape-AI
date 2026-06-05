@@ -387,7 +387,7 @@ const floorPlans = <FloorLayout, List<PlanItem>>{
   ],
 };
 
-const processingStages = [
+const videoProcessingStages = [
   ('Uploading video', 'Securely sending your clip'),
   ('Extracting frames', 'Pulling clear stills from the video'),
   ('Detecting items', 'Finding sofa, bed, desk and more'),
@@ -395,6 +395,35 @@ const processingStages = [
   ('Preparing layouts', 'Drafting practical reshuffle options'),
   ('Ready for review', 'Your correction step is next'),
 ];
+
+const imageProcessingStages = [
+  ('Uploading photo', 'Securely sending your image'),
+  ('Reading the room', 'Analysing your photo'),
+  ('Detecting items', 'Finding sofa, bed, desk and more'),
+  ('Understanding layout', 'Mapping doors, windows and open space'),
+  ('Preparing layouts', 'Drafting practical reshuffle options'),
+  ('Ready for review', 'Your correction step is next'),
+];
+
+/// Generic fallback used when we don't yet know whether the scan is a photo or
+/// a video (e.g. the design-pass mock flow with no media selected).
+const genericProcessingStages = [
+  ('Uploading room scan', 'Securely sending your capture'),
+  ('Processing your scan', 'Reading the room'),
+  ('Detecting items', 'Finding sofa, bed, desk and more'),
+  ('Understanding layout', 'Mapping doors, windows and open space'),
+  ('Preparing layouts', 'Drafting practical reshuffle options'),
+  ('Ready for review', 'Your correction step is next'),
+];
+
+/// Picks the right stage copy for the kind of media the user provided.
+List<(String, String)> processingStagesFor(MediaKind? kind) {
+  return switch (kind) {
+    MediaKind.image => imageProcessingStages,
+    MediaKind.video => videoProcessingStages,
+    null => genericProcessingStages,
+  };
+}
 
 Color difficultyColor(String difficulty) {
   return switch (difficulty) {

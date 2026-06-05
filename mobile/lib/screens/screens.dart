@@ -1,14 +1,18 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:video_player/video_player.dart';
 
 import '../data/mock_data.dart';
 import '../data/models.dart';
 import '../services/api_config.dart';
 import '../services/api_service.dart';
+import '../services/media_picker.dart';
 import '../state/auth_state.dart';
 import '../state/project_state.dart';
 import '../state/remote_projects.dart';
@@ -83,7 +87,7 @@ class WelcomeScreen extends StatelessWidget {
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
-                                  'From a short room video',
+                                  'From a quick room photo or video',
                                   style: AppText.xs(),
                                   overflow: TextOverflow.ellipsis,
                                 ),
@@ -101,7 +105,7 @@ class WelcomeScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'Record a quick video. ReSpace finds your furniture and suggests practical layouts using what you already own.',
+                    'Snap a photo or record a quick video. ReSpace finds your furniture and suggests practical layouts using what you already own.',
                     style: AppText.body(),
                   ),
                   const SizedBox(height: 22),
@@ -687,7 +691,7 @@ class ProfileScreen extends ConsumerWidget {
               children: const [
                 SettingsRow(
                   icon: Icons.lock_rounded,
-                  label: 'Delete room videos',
+                  label: 'Delete room media',
                   value: '',
                 ),
                 SettingsRow(
@@ -1092,51 +1096,113 @@ class _TipRow extends StatelessWidget {
 
 enum UploadPhase { choose, uploading, preview, error }
 
-class UploadVideoScreen extends StatefulWidget {
-  const UploadVideoScreen({super.key});
+class UploadMediaScreen extends ConsumerStatefulWidget {
+  const UploadMediaScreen({super.key});
 
   @override
-  State<UploadVideoScreen> createState() => _UploadVideoScreenState();
+  ConsumerState<UploadMediaScreen> createState() => _UploadMediaScreenState();
 }
 
-class _UploadVideoScreenState extends State<UploadVideoScreen> {
+class _UploadMediaScreenState extends ConsumerState<UploadMediaScreen> {
   UploadPhase phase = UploadPhase.choose;
   int pct = 0;
-  Timer? timer;
+  String? errorMessage;
+  bool _picking = false;
 
-  @override
-  void dispose() {
-    timer?.cancel();
-    super.dispose();
+  Future<void> _pick({
+    required MediaKind kind,
+    required ImageSource source,
+  }) async {
+    if (_picking) return;
+    _picking = true;
+    try {
+      final picker = ref.read(mediaPickerProvider);
+      final media = kind == MediaKind.image
+          ? await picker.pickImage(source: source)
+          : await picker.pickVideo(source: source);
+      if (media == null) return; // user cancelled
+      ref.read(projectControllerProvider.notifier).setMedia(media);
+      if (mounted) setState(() => phase = UploadPhase.preview);
+    } catch (e) {
+      if (!mounted) return;
+      final where = source == ImageSource.camera ? 'camera' : 'gallery';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open $where: $e')),
+      );
+    } finally {
+      _picking = false;
+    }
   }
 
-  void startUpload({bool fail = false}) {
-    timer?.cancel();
+  /// Sends the picked media to the backend (upload-url → PUT → complete) when a
+  /// real project is available, then advances to processing. In the design-pass
+  /// mock flow (or when no backend project exists) it just advances.
+  Future<void> _analyse() async {
+    final project = ref.read(projectControllerProvider);
+    final media = project.media;
+    final projectId = project.remoteProjectId;
+
+    if (useMockData || projectId == null || media == null) {
+      context.go('/processing');
+      return;
+    }
+
     setState(() {
       phase = UploadPhase.uploading;
-      pct = 0;
+      pct = 10;
+      errorMessage = null;
     });
-    timer = Timer.periodic(const Duration(milliseconds: 220), (timer) {
-      final next = pct + 12;
-      if (fail && next > 64) {
-        timer.cancel();
-        setState(() => phase = UploadPhase.error);
-        return;
+
+    try {
+      final api = ref.read(apiServiceProvider);
+      final res = await api.requestUploadUrl(
+        projectId: projectId,
+        fileName: media.fileName,
+        mimeType: media.mimeType,
+        fileSize: media.sizeBytes,
+        mediaKind: media.kindName, // 'image' for photos, 'video' for clips
+      );
+      final mediaId = res['media_id']?.toString();
+      final uploadUrl = res['upload_url']?.toString();
+      if (mounted) setState(() => pct = 55);
+
+      if (uploadUrl != null) {
+        // No-op (returns false) when R2 isn't configured and the URL is a
+        // mock:// placeholder, so local dev still works end-to-end.
+        await api.putToSignedUrl(
+          uploadUrl: uploadUrl,
+          file: File(media.path),
+          contentType: media.mimeType,
+        );
       }
-      if (next >= 100) {
-        timer.cancel();
-        setState(() {
-          pct = 100;
-          phase = UploadPhase.preview;
-        });
-      } else {
-        setState(() => pct = next);
+      if (mounted) setState(() => pct = 85);
+
+      if (mediaId != null) {
+        await api.completeUpload(projectId: projectId, mediaId: mediaId);
       }
-    });
+      if (!mounted) return;
+      setState(() => pct = 100);
+      context.go('/processing');
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        phase = UploadPhase.error;
+        errorMessage = e.message;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        phase = UploadPhase.error;
+        errorMessage = '$e';
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final media = ref.watch(
+      projectControllerProvider.select((s) => s.media),
+    );
     return PageShell(
       child: Column(
         children: [
@@ -1145,27 +1211,58 @@ class _UploadVideoScreenState extends State<UploadVideoScreen> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 28),
               children: [
-                Text('Add a room video', style: AppText.h1()),
+                Text('Add a room photo or video', style: AppText.h1()),
                 const SizedBox(height: 6),
                 Text(
-                  'Record now or pick one from your gallery. This phase uses mock media only.',
+                  'Take a photo, record a video, or pick one from your gallery. '
+                  'ReSpace works from either.',
                   style: AppText.body(),
                 ),
                 const SizedBox(height: 18),
                 if (phase == UploadPhase.choose) ...[
+                  const _ChooseSectionLabel('Photo'),
+                  const SizedBox(height: 8),
                   _UploadChoice(
-                    icon: Icons.videocam_rounded,
-                    title: 'Record video',
-                    subtitle: 'Guided in-app capture',
+                    icon: Icons.photo_camera_rounded,
+                    title: 'Take a photo',
+                    subtitle: 'Snap your room now',
                     primary: true,
-                    onTap: startUpload,
+                    onTap: () => _pick(
+                      kind: MediaKind.image,
+                      source: ImageSource.camera,
+                    ),
                   ),
                   const SizedBox(height: 12),
                   _UploadChoice(
                     icon: Icons.photo_library_rounded,
-                    title: 'Upload from gallery',
+                    title: 'Choose a photo',
+                    subtitle: 'Pick an existing image',
+                    onTap: () => _pick(
+                      kind: MediaKind.image,
+                      source: ImageSource.gallery,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  const _ChooseSectionLabel('Video'),
+                  const SizedBox(height: 8),
+                  _UploadChoice(
+                    icon: Icons.videocam_rounded,
+                    title: 'Record a video',
+                    subtitle: 'Guided in-app capture',
+                    onTap: () => _pick(
+                      kind: MediaKind.video,
+                      source: ImageSource.camera,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _UploadChoice(
+                    icon: Icons.video_library_rounded,
+                    title: 'Upload a video',
                     subtitle: 'Pick an existing clip',
-                    onTap: startUpload,
+                    onTap: () => _pick(
+                      kind: MediaKind.video,
+                      source: ImageSource.gallery,
+                    ),
                   ),
                   const SizedBox(height: 16),
                   RsCard(
@@ -1181,10 +1278,9 @@ class _UploadVideoScreenState extends State<UploadVideoScreen> {
                         ),
                         const SizedBox(height: 9),
                         for (final item in [
-                          'MP4 or MOV format',
-                          '30-60 seconds long',
-                          'Up to 200 MB',
-                          'Good lighting, steady pan',
+                          'Photo: JPG, PNG, WebP or HEIC (up to 15 MB)',
+                          'Video: MP4 or MOV (up to 250 MB)',
+                          'Show every corner in good lighting',
                         ])
                           Padding(
                             padding: const EdgeInsets.symmetric(vertical: 4),
@@ -1196,46 +1292,45 @@ class _UploadVideoScreenState extends State<UploadVideoScreen> {
                                   size: 16,
                                 ),
                                 const SizedBox(width: 9),
-                                Text(item, style: AppText.sm()),
+                                Expanded(
+                                  child: Text(item, style: AppText.sm()),
+                                ),
                               ],
                             ),
                           ),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  Center(
-                    child: RsButton(
-                      label: 'Simulate failed upload',
-                      icon: Icons.warning_rounded,
-                      variant: RsButtonVariant.quiet,
-                      compact: true,
-                      expand: false,
-                      onPressed: () => startUpload(fail: true),
-                    ),
-                  ),
                 ] else if (phase == UploadPhase.uploading) ...[
                   _UploadingCard(
                     pct: pct,
-                    onCancel: () => setState(() => phase = UploadPhase.choose),
+                    media: media,
+                    onCancel: () =>
+                        setState(() => phase = UploadPhase.preview),
                   ),
                 ] else if (phase == UploadPhase.preview) ...[
-                  const _VideoPreviewCard(),
+                  if (media != null)
+                    _MediaPreview(media: media)
+                  else
+                    const SizedBox.shrink(),
                   const SizedBox(height: 14),
-                  const RsNotice(
-                    text:
-                        'All four corners and the window are visible. You will review AI detections before any layout is generated.',
+                  RsNotice(
+                    text: (media?.isVideo ?? false)
+                        ? 'Make sure all four corners and the window are visible. '
+                              'You will review AI detections before any layout is generated.'
+                        : 'Make sure the whole room is visible. '
+                              'You will review AI detections before any layout is generated.',
                     icon: Icons.check_rounded,
                   ),
                   const SizedBox(height: 18),
                   RsButton(
                     label: 'Looks good - analyse',
                     icon: Icons.auto_awesome_rounded,
-                    onPressed: () => context.go('/processing'),
+                    onPressed: _analyse,
                   ),
                   const SizedBox(height: 4),
                   RsButton(
-                    label: 'Choose another video',
+                    label: 'Choose another',
                     variant: RsButtonVariant.quiet,
                     onPressed: () => setState(() => phase = UploadPhase.choose),
                   ),
@@ -1260,7 +1355,8 @@ class _UploadVideoScreenState extends State<UploadVideoScreen> {
                         Text('Upload interrupted', style: AppText.h3()),
                         const SizedBox(height: 5),
                         Text(
-                          'Nothing was lost. Try again with a steady connection.',
+                          errorMessage ??
+                              'Nothing was lost. Try again with a steady connection.',
                           style: AppText.sm(),
                           textAlign: TextAlign.center,
                         ),
@@ -1268,11 +1364,11 @@ class _UploadVideoScreenState extends State<UploadVideoScreen> {
                         RsButton(
                           label: 'Retry upload',
                           icon: Icons.refresh_rounded,
-                          onPressed: startUpload,
+                          onPressed: _analyse,
                         ),
                         const SizedBox(height: 4),
                         RsButton(
-                          label: 'Choose another video',
+                          label: 'Choose another',
                           variant: RsButtonVariant.quiet,
                           onPressed: () =>
                               setState(() => phase = UploadPhase.choose),
@@ -1288,6 +1384,30 @@ class _UploadVideoScreenState extends State<UploadVideoScreen> {
       ),
     );
   }
+}
+
+class _ChooseSectionLabel extends StatelessWidget {
+  const _ChooseSectionLabel(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Text(
+        label.toUpperCase(),
+        style: AppText.xs(weight: FontWeight.w800, color: AppColors.ink3),
+      ),
+    );
+  }
+}
+
+String _prettySize(int bytes) {
+  if (bytes <= 0) return '';
+  const mb = 1024 * 1024;
+  if (bytes >= mb) return '${(bytes / mb).toStringAsFixed(1)} MB';
+  return '${(bytes / 1024).toStringAsFixed(0)} KB';
 }
 
 class _UploadChoice extends StatelessWidget {
@@ -1346,13 +1466,21 @@ class _UploadChoice extends StatelessWidget {
 }
 
 class _UploadingCard extends StatelessWidget {
-  const _UploadingCard({required this.pct, required this.onCancel});
+  const _UploadingCard({
+    required this.pct,
+    required this.onCancel,
+    this.media,
+  });
 
   final int pct;
   final VoidCallback onCancel;
+  final SelectedMedia? media;
 
   @override
   Widget build(BuildContext context) {
+    final name = media?.fileName ?? 'room_scan';
+    final sizeText = media != null ? _prettySize(media!.sizeBytes) : '';
+    final isVideo = media?.isVideo ?? false;
     return Column(
       children: [
         RsCard(
@@ -1361,12 +1489,16 @@ class _UploadingCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(13),
-                    child: const SizedBox(
-                      width: 50,
-                      height: 50,
-                      child: RoomScene(layoutKey: 'bedB', height: 50),
+                  Container(
+                    width: 50,
+                    height: 50,
+                    decoration: BoxDecoration(
+                      color: AppColors.tealTint,
+                      borderRadius: BorderRadius.circular(13),
+                    ),
+                    child: Icon(
+                      isVideo ? Icons.movie_rounded : Icons.image_rounded,
+                      color: AppColors.teal,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -1375,11 +1507,12 @@ class _UploadingCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'room_scan.mp4',
+                          name,
                           style: AppText.h3().copyWith(fontSize: 14.5),
+                          overflow: TextOverflow.ellipsis,
                         ),
                         const SizedBox(height: 2),
-                        Text('48s - 84 MB', style: AppText.xs()),
+                        Text(sizeText, style: AppText.xs()),
                       ],
                     ),
                   ),
@@ -1415,64 +1548,51 @@ class _UploadingCard extends StatelessWidget {
   }
 }
 
-class _VideoPreviewCard extends StatelessWidget {
-  const _VideoPreviewCard();
+/// Previews the picked media: a still photo via [Image.file], or a real video
+/// via the [video_player] plugin.
+class _MediaPreview extends StatelessWidget {
+  const _MediaPreview({required this.media});
+
+  final SelectedMedia media;
 
   @override
   Widget build(BuildContext context) {
+    if (media.isVideo) {
+      return _VideoPreview(path: media.path, fileName: media.fileName);
+    }
     return RsCard(
       clip: Clip.antiAlias,
-      child: Stack(
-        alignment: Alignment.center,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const RoomScene(layoutKey: 'bedA', paletteKey: 'warm', height: 210),
-          Container(
-            width: 58,
-            height: 58,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: .92),
-              shape: BoxShape.circle,
-              boxShadow: AppShadows.sh,
-            ),
-            child: const Icon(
-              Icons.play_arrow_rounded,
-              color: AppColors.ink,
-              size: 34,
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 260),
+            child: Image.file(
+              File(media.path),
+              width: double.infinity,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => const SizedBox(
+                height: 160,
+                child: Center(
+                  child: Icon(Icons.broken_image_rounded, color: AppColors.ink3),
+                ),
+              ),
             ),
           ),
-          Positioned(
-            left: 12,
-            right: 12,
-            bottom: 12,
+          Padding(
+            padding: const EdgeInsets.all(12),
             child: Row(
               children: [
-                Text(
-                  '0:12',
-                  style: AppText.xs(
-                    color: Colors.white,
-                    weight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(width: 9),
+                const Icon(Icons.image_rounded, size: 16, color: AppColors.teal),
+                const SizedBox(width: 8),
                 Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(99),
-                    child: LinearProgressIndicator(
-                      value: .26,
-                      minHeight: 4,
-                      color: Colors.white,
-                      backgroundColor: Colors.white.withValues(alpha: .35),
-                    ),
+                  child: Text(
+                    media.fileName,
+                    style: AppText.xs(),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                const SizedBox(width: 9),
-                Text(
-                  '0:48',
-                  style: AppText.xs(
-                    color: Colors.white,
-                    weight: FontWeight.w700,
-                  ),
-                ),
+                Text(_prettySize(media.sizeBytes), style: AppText.xs()),
               ],
             ),
           ),
@@ -1482,14 +1602,136 @@ class _VideoPreviewCard extends StatelessWidget {
   }
 }
 
-class ProcessingScreen extends StatefulWidget {
+class _VideoPreview extends StatefulWidget {
+  const _VideoPreview({required this.path, required this.fileName});
+
+  final String path;
+  final String fileName;
+
+  @override
+  State<_VideoPreview> createState() => _VideoPreviewState();
+}
+
+class _VideoPreviewState extends State<_VideoPreview> {
+  VideoPlayerController? _controller;
+  bool _ready = false;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final controller = VideoPlayerController.file(File(widget.path));
+    _controller = controller;
+    controller
+        .initialize()
+        .then((_) {
+          if (!mounted) return;
+          controller.setLooping(true);
+          setState(() => _ready = true);
+        })
+        .catchError((Object _) {
+          if (!mounted) return;
+          setState(() => _failed = true);
+        });
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    final controller = _controller;
+    if (controller == null || !_ready) return;
+    setState(() {
+      controller.value.isPlaying ? controller.pause() : controller.play();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = _controller;
+    // Some platforms (e.g. the iOS Simulator) can't decode every clip — fall
+    // back to a labelled placeholder instead of breaking the flow.
+    if (_failed || controller == null) {
+      return RsCard(
+        clip: Clip.antiAlias,
+        child: Container(
+          height: 210,
+          color: AppColors.surface3,
+          alignment: Alignment.center,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.movie_rounded, size: 36, color: AppColors.ink3),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  widget.fileName,
+                  style: AppText.xs(),
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (!_ready) {
+      return RsCard(
+        clip: Clip.antiAlias,
+        child: const SizedBox(
+          height: 210,
+          child: Center(
+            child: CircularProgressIndicator(color: AppColors.teal),
+          ),
+        ),
+      );
+    }
+    final aspect = controller.value.aspectRatio == 0
+        ? 16 / 9
+        : controller.value.aspectRatio;
+    return RsCard(
+      clip: Clip.antiAlias,
+      child: GestureDetector(
+        onTap: _toggle,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            AspectRatio(aspectRatio: aspect, child: VideoPlayer(controller)),
+            if (!controller.value.isPlaying)
+              Container(
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: .92),
+                  shape: BoxShape.circle,
+                  boxShadow: AppShadows.sh,
+                ),
+                child: const Icon(
+                  Icons.play_arrow_rounded,
+                  color: AppColors.ink,
+                  size: 34,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ProcessingScreen extends ConsumerStatefulWidget {
   const ProcessingScreen({super.key});
 
   @override
-  State<ProcessingScreen> createState() => _ProcessingScreenState();
+  ConsumerState<ProcessingScreen> createState() => _ProcessingScreenState();
 }
 
-class _ProcessingScreenState extends State<ProcessingScreen> {
+class _ProcessingScreenState extends ConsumerState<ProcessingScreen> {
   late Timer timer;
   double progress = .04;
 
@@ -1516,9 +1758,13 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final stage = (progress * processingStages.length).floor().clamp(
+    final mediaKind = ref.watch(
+      projectControllerProvider.select((s) => s.media?.kind),
+    );
+    final stages = processingStagesFor(mediaKind);
+    final stage = (progress * stages.length).floor().clamp(
       0,
-      processingStages.length - 1,
+      stages.length - 1,
     );
     return PageShell(
       child: Padding(
@@ -1597,10 +1843,10 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                     ),
                     child: Column(
                       children: [
-                        for (var i = 0; i < processingStages.length; i++)
+                        for (var i = 0; i < stages.length; i++)
                           _ProcessingRow(
-                            title: processingStages[i].$1,
-                            subtitle: processingStages[i].$2,
+                            title: stages[i].$1,
+                            subtitle: stages[i].$2,
                             index: i,
                             stage: stage,
                           ),
@@ -2261,7 +2507,7 @@ class _PreferencesScreenState extends ConsumerState<PreferencesScreen> {
                 const SizedBox(height: 18),
                 const RsNotice(
                   text:
-                      'Generated room images are suggestions based on your video and choices, not exact engineering plans.',
+                      'Generated room images are suggestions based on your room scan and choices, not exact engineering plans.',
                 ),
               ],
             ),

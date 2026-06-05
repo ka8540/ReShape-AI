@@ -29,6 +29,11 @@ final routerProvider = Provider<GoRouter>((ref) {
           return loggingIn ? '/home' : null;
       }
     },
+    // Transition policy (see ReSpaceApp.pageTransitionsTheme):
+    //   • Bottom-tab pages and the login gate use NoTransitionPage so switching
+    //     tabs is instant and never animates like a slideshow.
+    //   • Every other route uses the default page, which inherits the single
+    //     app-wide transition, so the whole flow animates the same way.
     routes: [
       GoRoute(
         path: '/login',
@@ -37,8 +42,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/',
-        pageBuilder: (context, state) =>
-            const NoTransitionPage(child: WelcomeScreen()),
+        builder: (context, state) => const WelcomeScreen(),
       ),
       StatefulShellRoute.indexedStack(
         parentNavigatorKey: _rootNavigatorKey,
@@ -85,7 +89,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/upload',
-        builder: (context, state) => const UploadVideoScreen(),
+        builder: (context, state) => const UploadMediaScreen(),
       ),
       GoRoute(
         path: '/processing',

@@ -140,3 +140,74 @@ class RoomPalette {
 }
 
 enum FloorLayout { before, moreSpace, workFlow, openWalk, balanced }
+
+/// Whether the room scan the user provided is a still photo or a video clip.
+enum MediaKind { image, video }
+
+/// A piece of media (photo or video) the user picked or captured for a project.
+/// Carries everything the backend `media/upload-url` endpoint needs.
+class SelectedMedia {
+  final MediaKind kind;
+  final String path; // local file path on the device
+  final String fileName;
+  final String mimeType;
+  final int sizeBytes;
+
+  const SelectedMedia({
+    required this.kind,
+    required this.path,
+    required this.fileName,
+    required this.mimeType,
+    required this.sizeBytes,
+  });
+
+  bool get isImage => kind == MediaKind.image;
+  bool get isVideo => kind == MediaKind.video;
+
+  /// `image` | `video` — the exact string the backend `media_kind` field wants.
+  String get kindName => kind == MediaKind.image ? 'image' : 'video';
+}
+
+/// Maps a file name (and an optional picker-provided MIME) to a MIME type the
+/// backend accepts. The allow-lists mirror `backend/app/core/config.py`:
+///   image → image/jpeg, image/png, image/webp, image/heic
+///   video → video/mp4, video/quicktime
+String mimeForMedia(MediaKind kind, String fileName, [String? providedMime]) {
+  final ext = fileName.contains('.')
+      ? fileName.toLowerCase().split('.').last
+      : '';
+  if (kind == MediaKind.image) {
+    const allowed = {'image/jpeg', 'image/png', 'image/webp', 'image/heic'};
+    switch (ext) {
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      case 'heic':
+      case 'heif':
+        return 'image/heic';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      default:
+        if (providedMime != null && allowed.contains(providedMime)) {
+          return providedMime;
+        }
+        return 'image/jpeg';
+    }
+  }
+  const allowed = {'video/mp4', 'video/quicktime'};
+  switch (ext) {
+    case 'mov':
+    case 'qt':
+      return 'video/quicktime';
+    case 'mp4':
+    case 'm4v':
+      return 'video/mp4';
+    default:
+      if (providedMime != null && allowed.contains(providedMime)) {
+        return providedMime;
+      }
+      return 'video/mp4';
+  }
+}
