@@ -111,6 +111,8 @@ class ApiService {
           HttpHeaders.contentTypeHeader: contentType,
           HttpHeaders.contentLengthHeader: await file.length(),
         },
+        sendTimeout: const Duration(seconds: 60),
+        receiveTimeout: const Duration(seconds: 30),
       ),
     );
     return res.statusCode != null && res.statusCode! < 300;
@@ -224,7 +226,7 @@ class ApiService {
 
   // ------------------------------------------------------------ generation
 
-  Future<List<Map<String, dynamic>>> generateLayouts({
+  Future<Map<String, dynamic>> generateLayouts({
     required String projectId,
     int variants = 3,
     String? referenceMediaId,
@@ -236,7 +238,7 @@ class ApiService {
         if (referenceMediaId != null) 'reference_media_id': referenceMediaId,
       },
     );
-    return _asList(res.data);
+    return _asMap(res.data);
   }
 
   Future<Map<String, dynamic>> generationStatus(String projectId) =>

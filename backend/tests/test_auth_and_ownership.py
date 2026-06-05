@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services import generation_service
+
 
 def test_health_is_public(client):
     assert client.get("/health").status_code == 200
@@ -98,7 +100,12 @@ def test_rejects_unsupported_image_mime(client, auth_as):
     assert res.status_code == 400
 
 
-def test_generation_endpoint_requires_owner(client, auth_as):
+def test_generation_endpoint_requires_owner(client, auth_as, monkeypatch):
+    monkeypatch.setattr(
+        generation_service,
+        "start_inline_generation_job",
+        lambda design_ids: None,
+    )
     alice = auth_as("t-alice", uid="alice", email="g-alice@example.com")
     pid = client.post("/projects", json={"name": "X"}, headers=alice).json()["id"]
     bob = auth_as("t-bob", uid="bob", email="g-bob@example.com")

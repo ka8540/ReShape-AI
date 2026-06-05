@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -28,6 +29,41 @@ LayoutResult selectedResult(ProjectState project) {
     (result) => result.id == project.selectedLayout,
     orElse: () => results.first,
   );
+}
+
+String userFriendlyError(Object error) {
+  if (error is DioException) {
+    switch (error.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+        return 'The server is still taking too long to respond. Try again in a moment.';
+      case DioExceptionType.connectionError:
+        return 'Could not connect to the server. Check that the backend is running.';
+      case DioExceptionType.badResponse:
+        return _backendErrorMessage(error.response?.data) ??
+            'The server returned an error.';
+      case DioExceptionType.badCertificate:
+      case DioExceptionType.cancel:
+      case DioExceptionType.unknown:
+        return 'Something went wrong. Please try again.';
+    }
+  }
+  if (error is ApiException) {
+    final message = error.message;
+    if (message.toLowerCase().contains('timeout') ||
+        message.toLowerCase().contains('dioexception')) {
+      return 'The server is still taking too long to respond. Try again in a moment.';
+    }
+    return message;
+  }
+  return 'Something went wrong. Please try again.';
+}
+
+String? _backendErrorMessage(dynamic data) {
+  if (data is Map && data['detail'] != null) return data['detail'].toString();
+  if (data is String && data.isNotEmpty) return data;
+  return null;
 }
 
 class WelcomeScreen extends StatelessWidget {
@@ -2862,7 +2898,8 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
   bool _busy = false;
   Timer? _poll;
   int _pollCount = 0;
-  static const _maxPolls = 6;
+  static const _maxPolls = 120;
+  static const _pollInterval = Duration(milliseconds: 2500);
 
   bool get _backendMode =>
       !useMockData &&
@@ -2946,15 +2983,18 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
 
       if (anyReady) {
         _stopPolling();
+        if (!mounted) return;
         setState(() {
           _selectedId ??= views.firstWhere((v) => v.imageUrl != null).id;
           _phase = _ResultsPhase.ready;
         });
       } else if (anyPending && _pollCount < _maxPolls) {
+        if (!mounted) return;
         setState(() => _phase = _ResultsPhase.generating);
         _schedulePoll();
       } else if (failureMessage != null && !anyPending) {
         _stopPolling();
+        if (!mounted) return;
         setState(() {
           _error = failureMessage;
           _phase = _ResultsPhase.failed;
@@ -2963,12 +3003,14 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
         // No image came back (generation still queued past the poll budget, or
         // not wired). Show an honest empty state — never fabricate a result.
         _stopPolling();
+        if (!mounted) return;
         setState(() => _phase = _ResultsPhase.empty);
       }
     } catch (e) {
       _stopPolling();
+      if (!mounted) return;
       setState(() {
-        _error = e is ApiException ? e.message : '$e';
+        _error = userFriendlyError(e);
         _phase = _ResultsPhase.failed;
       });
     } finally {
@@ -2978,9 +3020,9 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
 
   void _schedulePoll() {
     _poll?.cancel();
-    _poll = Timer(const Duration(milliseconds: 1500), () {
+    _poll = Timer(_pollInterval, () {
       _pollCount++;
-      _load();
+      _pollGenerationStatus();
     });
   }
 
@@ -2990,6 +3032,7 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
   }
 
   Future<void> _generate() async {
+    _stopPolling();
     setState(() {
       _phase = _ResultsPhase.generating;
       _error = null;
@@ -2999,14 +3042,74 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
           .read(apiServiceProvider)
           .generateLayouts(projectId: _projectId, variants: 2);
     } catch (e) {
+      if (!mounted) return;
       setState(() {
-        _error = e is ApiException ? e.message : '$e';
+        _error = userFriendlyError(e);
         _phase = _ResultsPhase.failed;
       });
       return;
     }
     _pollCount = 0;
-    await _load();
+    await _pollGenerationStatus();
+  }
+
+  Future<void> _pollGenerationStatus() async {
+    if (!mounted) return;
+    try {
+      final status = await ref
+          .read(apiServiceProvider)
+          .generationStatus(_projectId);
+      final normalized = (status['status'] ?? '').toString();
+      final failed = (status['failed'] is num)
+          ? (status['failed'] as num).toInt()
+          : 0;
+      final succeeded = (status['succeeded'] is num)
+          ? (status['succeeded'] as num).toInt()
+          : 0;
+      final pending =
+          normalized == 'queued' ||
+          normalized == 'running' ||
+          normalized == 'processing';
+
+      if (normalized == 'completed' || normalized == 'succeeded') {
+        _stopPolling();
+        await _load();
+        return;
+      }
+
+      if (normalized == 'failed' || (failed > 0 && succeeded == 0 && !pending)) {
+        _stopPolling();
+        if (!mounted) return;
+        setState(() {
+          _error =
+              _nonBlank(status['error_message']) ??
+              'Generation failed. Please try again.';
+          _phase = _ResultsPhase.failed;
+        });
+        return;
+      }
+
+      if (_pollCount >= _maxPolls) {
+        _stopPolling();
+        if (!mounted) return;
+        setState(() {
+          _error = 'Generation is taking longer than expected. Try again.';
+          _phase = _ResultsPhase.failed;
+        });
+        return;
+      }
+
+      if (!mounted) return;
+      setState(() => _phase = _ResultsPhase.generating);
+      _schedulePoll();
+    } catch (e) {
+      _stopPolling();
+      if (!mounted) return;
+      setState(() {
+        _error = userFriendlyError(e);
+        _phase = _ResultsPhase.failed;
+      });
+    }
   }
 
   Future<void> _regenerate() async {
@@ -3029,7 +3132,7 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Could not select layout: ${e is ApiException ? e.message : e}',
+              'Could not select layout: ${userFriendlyError(e)}',
             ),
           ),
         );

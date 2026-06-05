@@ -12,6 +12,8 @@ clear error that the client can show.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from threading import Thread
 
 from sqlalchemy.orm import Session
 
@@ -34,6 +36,16 @@ from app.services.rate_limit_service import generation_limiter
 logger = logging.getLogger(__name__)
 
 
+def start_inline_generation_job(design_ids: list[str]) -> None:
+    thread = Thread(
+        target=run_generation_job,
+        args=(list(design_ids),),
+        daemon=True,
+        name=f"layout-generation-{design_ids[0] if design_ids else 'empty'}",
+    )
+    thread.start()
+
+
 def request_generation(
     db: Session,
     *,
@@ -41,6 +53,7 @@ def request_generation(
     project: Project,
     variants: int,
     reference_media_id: str | None,
+    schedule_inline_job: Callable[[list[str]], None] | None = None,
 ) -> list[GeneratedDesign]:
     settings = get_settings()
     mode = settings.generation_mode
@@ -87,8 +100,11 @@ def request_generation(
             logger.info("Enqueued generation batch %s via Celery", design_ids)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Celery enqueue failed: %s", exc)
-            if settings.APP_ENV == "local":
-                logger.info("Falling back to inline generation (local).")
+            if settings.APP_ENV == "local" and schedule_inline_job is not None:
+                logger.info("Falling back to background inline generation (local).")
+                schedule_inline_job(design_ids)
+            elif settings.APP_ENV == "local":
+                logger.info("Falling back to inline generation (local, blocking caller).")
                 run_generation_job(design_ids, db=db)
             else:
                 _fail_designs(
@@ -98,8 +114,12 @@ def request_generation(
                     "Could not queue the generation job. Try again later.",
                 )
     else:  # inline
-        logger.info("Running generation inline for %s", design_ids)
-        run_generation_job(design_ids, db=db)
+        if schedule_inline_job is not None:
+            logger.info("Scheduling background inline generation for %s", design_ids)
+            schedule_inline_job(design_ids)
+        else:
+            logger.info("Running generation inline for %s", design_ids)
+            run_generation_job(design_ids, db=db)
 
     return list_designs(db, project)
 
@@ -122,6 +142,10 @@ def run_generation_job(design_ids: list[str], db: Session | None = None) -> None
         project = db.get(Project, designs[0].project_id)
         settings = get_settings()
 
+        for design in designs:
+            design.generation_status = "running"
+        db.commit()
+
         if not settings.GEMINI_API_KEY:
             _fail_designs(db, designs, "MISSING_API_KEY", "GEMINI_API_KEY is missing.")
             return
@@ -139,10 +163,6 @@ def run_generation_job(design_ids: list[str], db: Session | None = None) -> None
         ref_bytes, ref_mime, ref_key = reference
         prompt = _build_prompt(project)
         service = AiImageService(settings)
-
-        for design in designs:
-            design.generation_status = "running"
-        db.commit()
 
         for design in designs:
             result = service.generate(

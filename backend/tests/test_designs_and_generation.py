@@ -8,6 +8,7 @@ mocks to exercise success / specific failures. No real Gemini calls are made.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -131,29 +132,74 @@ def _plan_json(*, sofa_id: str, window_id: str | None = None) -> str:
     )
 
 
-def test_inline_mode_calls_shared_generation_job(client, auth_as, monkeypatch):
-    calls: list[list[str]] = []
-    real = generation_service.run_generation_job
+def _run_inline_synchronously(monkeypatch, db_session):
+    monkeypatch.setattr(
+        generation_service,
+        "start_inline_generation_job",
+        lambda design_ids: generation_service.run_generation_job(
+            list(design_ids),
+            db=db_session,
+        ),
+    )
 
-    def _spy(design_ids, db=None):
-        calls.append(list(design_ids))
-        return real(design_ids, db=db)
 
-    monkeypatch.setattr(generation_service, "run_generation_job", _spy)
-
+def test_inline_mode_returns_quickly_and_schedules_background_job(
+    client,
+    auth_as,
+    monkeypatch,
+):
     headers = auth_as("t-inline", uid="inline")
     pid = _project(client, headers)
+    started: list[list[str]] = []
+
+    monkeypatch.setattr(
+        generation_service,
+        "start_inline_generation_job",
+        lambda design_ids: started.append(list(design_ids)),
+    )
+
+    start = time.monotonic()
     res = client.post(
         f"/projects/{pid}/generate-layouts", json={"variants": 2}, headers=headers
     )
+    elapsed = time.monotonic() - start
+
     assert res.status_code == 202
-    assert calls and len(calls[0]) == 2  # inline ran the shared job for 2 designs
-    # Inline ran -> nothing left "queued".
+    assert elapsed < 0.5
+    assert res.json()["status"] == "running"
+    assert started and len(started[0]) == 2
+
     designs = client.get(f"/projects/{pid}/designs", headers=headers).json()
-    assert all(d["generation_status"] != "queued" for d in designs)
+    assert len(designs) == 2
+    assert all(d["generation_status"] == "queued" for d in designs)
 
 
-def test_missing_reference_marks_design_failed(client, auth_as):
+def test_generation_status_reports_queued_while_background_job_active(
+    client,
+    auth_as,
+    monkeypatch,
+):
+    headers = auth_as("t-status-queued", uid="status-queued")
+    pid = _project(client, headers)
+    started: list[list[str]] = []
+
+    monkeypatch.setattr(
+        generation_service,
+        "start_inline_generation_job",
+        lambda design_ids: started.append(list(design_ids)),
+    )
+
+    client.post(f"/projects/{pid}/generate-layouts", json={"variants": 2}, headers=headers)
+    status = client.get(f"/projects/{pid}/generation-status", headers=headers).json()
+
+    assert started and len(started[0]) == 2
+    assert status["status"] == "running"
+    assert status["total"] == 2
+    assert status["queued"] == 2
+
+
+def test_missing_reference_marks_design_failed(client, db_session, auth_as, monkeypatch):
+    _run_inline_synchronously(monkeypatch, db_session)
     headers = auth_as("t-noref", uid="noref")
     pid = _project(client, headers)  # no media uploaded
 
@@ -166,6 +212,7 @@ def test_missing_reference_marks_design_failed(client, auth_as):
 
 
 def test_gemini_auth_failure_is_surfaced(client, db_session, auth_as, monkeypatch):
+    _run_inline_synchronously(monkeypatch, db_session)
     headers = auth_as("t-auth", uid="auth")
     pid = _project(client, headers)
     _add_reference_image(db_session, monkeypatch, pid)
@@ -187,6 +234,7 @@ def test_gemini_auth_failure_is_surfaced(client, db_session, auth_as, monkeypatc
 
 
 def test_gemini_quota_failure_is_surfaced(client, db_session, auth_as, monkeypatch):
+    _run_inline_synchronously(monkeypatch, db_session)
     headers = auth_as("t-quota", uid="quota")
     pid = _project(client, headers)
     _add_reference_image(db_session, monkeypatch, pid)
@@ -210,6 +258,7 @@ def test_gemini_quota_failure_is_surfaced(client, db_session, auth_as, monkeypat
 def test_successful_generation_uploads_and_saves_key(
     client, db_session, auth_as, monkeypatch
 ):
+    _run_inline_synchronously(monkeypatch, db_session)
     headers = auth_as("t-ok", uid="ok")
     pid = _project(client, headers)
     _add_reference_image(db_session, monkeypatch, pid)
@@ -239,10 +288,16 @@ def test_successful_generation_uploads_and_saves_key(
     assert design["output_read_url"]  # signed URL present
     assert uploaded == [b"PNGDATA"]  # output image uploaded to R2
 
+    status = client.get(f"/projects/{pid}/generation-status", headers=headers).json()
+    assert status["status"] == "completed"
+    assert status["succeeded"] == 1
+    assert status["failed"] == 0
+
 
 def test_successful_generation_stores_structured_layout_plan(
     client, db_session, auth_as, monkeypatch
 ):
+    _run_inline_synchronously(monkeypatch, db_session)
     headers = auth_as("t-plan", uid="plan")
     pid = _project(client, headers)
     _add_reference_image(db_session, monkeypatch, pid)
@@ -283,6 +338,7 @@ def test_successful_generation_stores_structured_layout_plan(
 def test_invalid_gemini_json_marks_layout_plan_failed_but_keeps_image(
     client, db_session, auth_as, monkeypatch
 ):
+    _run_inline_synchronously(monkeypatch, db_session)
     headers = auth_as("t-bad-plan", uid="bad-plan")
     pid = _project(client, headers)
     _add_reference_image(db_session, monkeypatch, pid)
@@ -365,6 +421,7 @@ def test_final_plan_returns_selected_design_and_structured_plan(
 
 
 def test_fixed_items_are_not_marked_as_moved(client, db_session, auth_as, monkeypatch):
+    _run_inline_synchronously(monkeypatch, db_session)
     headers = auth_as("t-fixed-plan", uid="fixed-plan")
     pid = _project(client, headers)
     _add_reference_image(db_session, monkeypatch, pid)
@@ -400,6 +457,7 @@ def test_fixed_items_are_not_marked_as_moved(client, db_session, auth_as, monkey
 def test_floor_plan_rejects_items_outside_current_project(
     client, db_session, auth_as, monkeypatch
 ):
+    _run_inline_synchronously(monkeypatch, db_session)
     headers = auth_as("t-unknown-plan", uid="unknown-plan")
     pid = _project(client, headers)
     _add_reference_image(db_session, monkeypatch, pid)
@@ -431,7 +489,13 @@ def test_floor_plan_rejects_items_outside_current_project(
     assert "outside this project" in design["layout_plan_error"]
 
 
-def test_generation_status_failed_when_all_failed(client, auth_as):
+def test_generation_status_failed_when_all_failed(
+    client,
+    db_session,
+    auth_as,
+    monkeypatch,
+):
+    _run_inline_synchronously(monkeypatch, db_session)
     headers = auth_as("t-stat", uid="stat")
     pid = _project(client, headers)  # no reference -> all fail
 
@@ -458,7 +522,13 @@ def test_designs_list_returns_output_read_url(client, db_session, auth_as):
     assert designs[0]["generation_status"] == "succeeded"
 
 
-def test_regenerate_replaces_batch_no_pileup(client, auth_as):
+def test_regenerate_replaces_batch_no_pileup(
+    client,
+    db_session,
+    auth_as,
+    monkeypatch,
+):
+    _run_inline_synchronously(monkeypatch, db_session)
     headers = auth_as("t-regen", uid="regen")
     pid = _project(client, headers)
 
