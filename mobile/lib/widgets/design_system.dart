@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../app/navigation.dart';
 import '../state/project_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -450,14 +451,7 @@ class FlowHeader extends StatelessWidget {
             children: [
               RoundIconButton(
                 icon: Icons.arrow_back_ios_new_rounded,
-                onTap: () {
-                  final router = GoRouter.of(context);
-                  if (router.canPop()) {
-                    context.pop();
-                  } else {
-                    context.go('/home');
-                  }
-                },
+                onTap: () => safePop(context),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -566,7 +560,7 @@ class AppBottomTabs extends ConsumerWidget {
                 ref
                     .read(projectControllerProvider.notifier)
                     .resetForNewProject();
-                context.go('/mode');
+                context.push('/mode');
               },
               child: Column(
                 mainAxisSize: MainAxisSize.min,

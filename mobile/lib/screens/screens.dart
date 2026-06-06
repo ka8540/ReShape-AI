@@ -17,6 +17,7 @@ import '../services/api_service.dart';
 import '../services/media_picker.dart';
 import '../state/auth_state.dart';
 import '../state/project_state.dart';
+import '../app/navigation.dart';
 import '../state/remote_projects.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -231,7 +232,7 @@ Future<void> _startNewProject(
 ) async {
   controller.resetForNewProject();
   if (useMockData) {
-    if (context.mounted) context.go('/mode');
+    if (context.mounted) context.push('/mode');
     return;
   }
   try {
@@ -242,7 +243,7 @@ Future<void> _startNewProject(
     );
     final id = created['id']?.toString();
     if (id != null) controller.setRemoteProjectId(id);
-    if (context.mounted) context.go('/mode');
+    if (context.mounted) context.push('/mode');
   } on ApiException catch (e) {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -367,7 +368,7 @@ class HomeScreen extends ConsumerWidget {
                         caption: 'Use what you own',
                         onTap: () {
                           controller.setMode(AppMode.reshuffle);
-                          context.go('/capture');
+                          context.push('/capture');
                         },
                       ),
                     ),
@@ -408,7 +409,7 @@ class HomeScreen extends ConsumerWidget {
                 ),
                 if (useMockData) ...[
                   if (project.emptyState)
-                    _EmptyProjects(onStart: () => context.go('/mode'))
+                    _EmptyProjects(onStart: () => context.push('/mode'))
                   else
                     for (final saved in project.saved) ...[
                       ProjectCard(project: saved),
@@ -520,7 +521,7 @@ class ProjectCard extends StatelessWidget {
     return RsCard(
       padding: const EdgeInsets.all(11),
       onTap: () =>
-          isRedesign ? context.go('/redesign') : context.go('/results'),
+          isRedesign ? context.go('/redesign') : context.push('/results'),
       child: Row(
         children: [
           ClipRRect(
@@ -841,7 +842,7 @@ class ModeSelectionScreen extends ConsumerWidget {
                   icon: Icons.open_in_full_rounded,
                   onTap: () {
                     controller.setMode(AppMode.reshuffle);
-                    context.go('/capture');
+                    context.push('/capture');
                   },
                 ),
                 const SizedBox(height: 14),
@@ -1006,7 +1007,7 @@ class CaptureInstructionsScreen extends StatelessWidget {
       bottom: BottomBar(
         child: RsButton(
           label: 'I am ready to scan',
-          onPressed: () => context.go('/upload'),
+          onPressed: () => context.push('/upload'),
         ),
       ),
       child: Column(
@@ -1180,7 +1181,7 @@ class _UploadMediaScreenState extends ConsumerState<UploadMediaScreen> {
     final projectId = project.remoteProjectId;
 
     if (useMockData || projectId == null || media == null) {
-      context.go('/processing');
+      context.push('/processing');
       return;
     }
 
@@ -1219,7 +1220,7 @@ class _UploadMediaScreenState extends ConsumerState<UploadMediaScreen> {
       }
       if (!mounted) return;
       setState(() => pct = 100);
-      context.go('/processing');
+      context.push('/processing');
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -1840,7 +1841,10 @@ class _ProcessingScreenState extends ConsumerState<ProcessingScreen> {
     _navigated = true;
     _anim?.cancel();
     _poll?.cancel();
-    context.go('/review');
+    // Replace, not push: the loading screen must not stay in the back stack,
+    // otherwise popping from Review would land back on a screen that instantly
+    // re-advances. Review's back then correctly returns to Upload.
+    context.pushReplacement('/review');
   }
 
   @override
@@ -1869,7 +1873,7 @@ class _ProcessingScreenState extends ConsumerState<ProcessingScreen> {
               alignment: Alignment.centerRight,
               child: RoundIconButton(
                 icon: Icons.close_rounded,
-                onTap: () => context.go('/upload'),
+                onTap: () => safePop(context, fallback: '/upload'),
               ),
             ),
             Expanded(
@@ -2178,7 +2182,7 @@ class _ReviewItemsScreenState extends ConsumerState<ReviewItemsScreen> {
         child: RsButton(
           label: 'Looks right - continue',
           icon: Icons.arrow_forward_rounded,
-          onPressed: () => context.go('/preferences'),
+          onPressed: () => context.push('/preferences'),
         ),
       ),
       child: Column(
@@ -2832,7 +2836,7 @@ class _PreferencesScreenState extends ConsumerState<PreferencesScreen> {
     // fetch designs), so we just navigate there and let it show the loading
     // state and call POST /generate-layouts when there are no designs yet.
     setState(() => generating = true);
-    context.go('/results');
+    context.push('/results');
   }
 }
 
@@ -3140,7 +3144,7 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
       }
     }
     notifier.setSelectedDesign(id);
-    if (mounted) context.go('/final');
+    if (mounted) context.push('/final');
   }
 
   @override
@@ -3180,7 +3184,7 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
               children: [
                 RoundIconButton(
                   icon: Icons.arrow_back_ios_new_rounded,
-                  onTap: () => context.go('/preferences'),
+                  onTap: () => safePop(context, fallback: '/preferences'),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -3543,7 +3547,7 @@ class _LayoutDetailScreenState extends ConsumerState<LayoutDetailScreen> {
               child: RsButton(
                 label: 'Save this plan',
                 icon: Icons.check_rounded,
-                onPressed: () => context.go('/final'),
+                onPressed: () => context.push('/final'),
               ),
             ),
           ],
@@ -3557,7 +3561,7 @@ class _LayoutDetailScreenState extends ConsumerState<LayoutDetailScreen> {
               children: [
                 RoundIconButton(
                   icon: Icons.arrow_back_ios_new_rounded,
-                  onTap: () => context.go('/results'),
+                  onTap: () => safePop(context, fallback: '/results'),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -3987,7 +3991,7 @@ class _FinalPlanScreenState extends ConsumerState<FinalPlanScreen> {
               children: [
                 RoundIconButton(
                   icon: Icons.arrow_back_ios_new_rounded,
-                  onTap: () => context.go('/layout/${result.id}'),
+                  onTap: () => safePop(context, fallback: '/results'),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -4208,7 +4212,7 @@ class _FinalPlanScreenState extends ConsumerState<FinalPlanScreen> {
               children: [
                 RoundIconButton(
                   icon: Icons.arrow_back_ios_new_rounded,
-                  onTap: () => context.go('/results'),
+                  onTap: () => safePop(context, fallback: '/results'),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -5414,7 +5418,7 @@ class RedesignComingSoonScreen extends StatelessWidget {
               children: [
                 RoundIconButton(
                   icon: Icons.arrow_back_ios_new_rounded,
-                  onTap: () => context.go('/mode'),
+                  onTap: () => safePop(context, fallback: '/mode'),
                 ),
                 const SizedBox(width: 12),
                 const RsBadge(
@@ -5499,7 +5503,7 @@ class _NewProjectCta extends StatelessWidget {
       padding: const EdgeInsets.all(18),
       borderStyle: BorderStyle.solid,
       shadow: false,
-      onTap: () => context.go('/mode'),
+      onTap: () => context.push('/mode'),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -5623,7 +5627,7 @@ class _RemoteProjectCard extends StatelessWidget {
     final status = row['status']?.toString() ?? 'draft';
     return RsCard(
       padding: const EdgeInsets.all(13),
-      onTap: () => context.go('/results'),
+      onTap: () => context.push('/results'),
       child: Row(
         children: [
           Container(
