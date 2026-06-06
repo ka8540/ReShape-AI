@@ -284,18 +284,31 @@ def _generate_structured_move_plan(
 
 
 def _build_prompt(project: Project) -> str:
-    items = [item.name for item in project.detected_items]
+    preference_set = project.preference_set
+    style = getattr(preference_set, "style", None) if preference_set else None
+
+    if project.mode == "reshuffle":
+        # The strict reshuffle template is self-contained: it carries the
+        # same-room / same-viewpoint / no-new-items rules and the per-item
+        # fixed/structural breakdown, so no extra constraint block is appended.
+        prompt_items = [
+            prompt_builder.PromptItem(
+                name=item.name,
+                fixed=item.fixed,
+                structural=item.structural,
+            )
+            for item in project.detected_items
+        ]
+        return prompt_builder.build_reshuffle_prompt(
+            items=prompt_items,
+            style=style,
+            primary_goal=getattr(preference_set, "primary_goal", None),
+            room_type=getattr(preference_set, "room_type", None),
+        )
+
+    names = [item.name for item in project.detected_items]
     fixed = [i.name for i in project.detected_items if i.fixed or i.structural]
-    style = (
-        getattr(project.preference_set, "style", None)
-        if project.preference_set
-        else None
-    )
-    base = (
-        prompt_builder.build_reshuffle_prompt(items=items, style=style)
-        if project.mode == "reshuffle"
-        else prompt_builder.build_redesign_prompt(items=items, style=style)
-    )
+    base = prompt_builder.build_redesign_prompt(items=names, style=style)
     fixed_line = (
         f"Keep these fixed/structural items exactly where they are: {', '.join(fixed)}.\n"
         if fixed
