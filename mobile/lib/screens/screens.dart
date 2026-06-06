@@ -4778,18 +4778,22 @@ class _GeneratedFloorPlanView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Walls are the room boundary (drawn by the grid painter), never a filled
-    // box on top of the furniture. Windows/doors render as edge markers.
-    // Furniture renders as boxes, structural/fixed behind movable ones so a
-    // moved piece is never hidden.
+    // Layering, back to front:
+    //   1. rugs/mats  -> flat floor underlay (not a solid box)
+    //   2. windows/doors -> edge markers (walls are the painted boundary)
+    //   3. furniture -> boxes, structural/fixed behind moved so a moved piece
+    //      is never hidden.
+    final rugs = plan.items.where((i) => i.isRug).toList();
     final windowsDoors = plan.items
         .where((i) => i.isWindow || i.isDoor)
         .toList();
-    final furniture = plan.items.where((i) => !i.isStructuralShell).toList()
-      ..sort((a, b) {
-        int rank(_GeneratedFloorItem i) => i.isMoved ? 2 : (i.fixed ? 0 : 1);
-        return rank(a).compareTo(rank(b));
-      });
+    final furniture =
+        plan.items.where((i) => !i.isStructuralShell && !i.isRug).toList()
+          ..sort((a, b) {
+            int rank(_GeneratedFloorItem i) =>
+                i.isMoved ? 2 : (i.fixed ? 0 : 1);
+            return rank(a).compareTo(rank(b));
+          });
 
     return AspectRatio(
       aspectRatio: plan.width / plan.height,
@@ -4799,21 +4803,87 @@ class _GeneratedFloorPlanView extends StatelessWidget {
           builder: (context, constraints) {
             final w = constraints.maxWidth;
             final h = constraints.maxHeight;
+            // Smallest on-screen footprint a labelled box may shrink to, so
+            // tiny items (a 5%-wide floor lamp) stay readable instead of
+            // collapsing to a dot.
+            const minBoxW = 52.0;
+            const minBoxH = 30.0;
             return Stack(
               children: [
-                for (final item in windowsDoors)
-                  _GeneratedFloorEdgeMarker(item: item, areaW: w, areaH: h),
-                for (final item in furniture)
+                for (final item in rugs)
                   Positioned(
                     left: w * (item.x / 100),
                     top: h * (item.y / 100),
                     width: w * (item.width / 100),
                     height: h * (item.height / 100),
-                    child: _GeneratedFloorPlanItem(item: item),
+                    child: _GeneratedRugUnderlay(item: item),
                   ),
+                for (final item in windowsDoors)
+                  _GeneratedFloorEdgeMarker(item: item, areaW: w, areaH: h),
+                for (final item in furniture)
+                  _positionedBox(item, w, h, minBoxW, minBoxH),
               ],
             );
           },
+        ),
+      ),
+    );
+  }
+
+  /// Places a furniture box, growing it to a minimum readable size (around its
+  /// own centre) and keeping it inside the card.
+  Widget _positionedBox(
+    _GeneratedFloorItem item,
+    double areaW,
+    double areaH,
+    double minW,
+    double minH,
+  ) {
+    final rawW = areaW * (item.width / 100);
+    final rawH = areaH * (item.height / 100);
+    final boxW = rawW < minW ? minW.clamp(0.0, areaW) : rawW;
+    final boxH = rawH < minH ? minH.clamp(0.0, areaH) : rawH;
+    final centerX = areaW * ((item.x + item.width / 2) / 100);
+    final centerY = areaH * ((item.y + item.height / 2) / 100);
+    final left = (centerX - boxW / 2).clamp(0.0, areaW - boxW);
+    final top = (centerY - boxH / 2).clamp(0.0, areaH - boxH);
+    return Positioned(
+      left: left,
+      top: top,
+      width: boxW,
+      height: boxH,
+      child: _GeneratedFloorPlanItem(item: item),
+    );
+  }
+}
+
+/// A rug rendered as a flat, soft floor area the furniture sits on — a thin
+/// dashed-look border and a faint fill, with the label tucked in a corner.
+class _GeneratedRugUnderlay extends StatelessWidget {
+  const _GeneratedRugUnderlay({required this.item});
+
+  final _GeneratedFloorItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.teal.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: AppColors.teal.withValues(alpha: .35),
+          width: 1.5,
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      alignment: Alignment.topLeft,
+      child: Text(
+        item.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: AppText.xs(
+          color: AppColors.teal,
+          weight: FontWeight.w700,
         ),
       ),
     );
@@ -5152,6 +5222,14 @@ class _GeneratedFloorItem {
   bool get isStructuralShell => isWall || isWindow || isDoor;
   bool get isMoved => status == 'moved';
   bool get isStructural => status == 'structural' || isStructuralShell;
+
+  /// Rugs/mats are an area on the floor, not an object — they render as a flat
+  /// underlay behind the furniture, not as a solid (orange) box on top.
+  bool get isRug =>
+      category == 'rug' ||
+      category == 'carpet' ||
+      category == 'mat' ||
+      category == 'area rug';
 
   static _GeneratedFloorItem? fromMap(Map<dynamic, dynamic> map) {
     final name = _nonBlank(map['name']);

@@ -690,6 +690,88 @@ void main() {
     expect(find.text('Sofa'), findsWidgets);
   });
 
+  testWidgets('Final Plan renders a rug and a tiny floor lamp with labels', (
+    tester,
+  ) async {
+    final planJson = jsonEncode({
+      'room_summary': 'Approximate layout.',
+      'floor_plan': {
+        'width': 100,
+        'height': 100,
+        'items': [
+          {
+            'item_id': 'i-rug',
+            'name': 'Rug',
+            'category': 'rug',
+            'x': 20,
+            'y': 30,
+            'width': 60,
+            'height': 50,
+            'rotation': 0,
+            'status': 'fixed',
+            'fixed': true,
+          },
+          {
+            'item_id': 'i-sofa',
+            'name': 'Sofa',
+            'category': 'sofa',
+            'x': 25,
+            'y': 35,
+            'width': 50,
+            'height': 18,
+            'rotation': 0,
+            'status': 'moved',
+            'fixed': false,
+          },
+          {
+            // 5x5 -> would collapse to a dot without the minimum-size fix.
+            'item_id': 'i-lamp',
+            'name': 'Floor lamp',
+            'category': 'lamp',
+            'x': 70,
+            'y': 60,
+            'width': 5,
+            'height': 5,
+            'rotation': 0,
+            'status': 'moved',
+            'fixed': false,
+          },
+        ],
+      },
+      'moved_items': [
+        {
+          'item_id': 'i-sofa',
+          'name': 'Sofa',
+          'from': 'a',
+          'to': 'b',
+          'reason': 'flow',
+        },
+      ],
+      'fixed_items': [],
+      'checklist': [],
+    });
+    final api = _FakeFinalPlanApi(
+      designs: [_designRow('d1', selected: true)],
+      designDetails: {
+        'd1': _designDetail(
+          'd1',
+          outputUrl: 'https://cdn.example.com/generated.png',
+          planJson: planJson,
+          planStatus: 'succeeded',
+        ),
+      },
+      finalPlan: _savedPlan(planJson: planJson),
+    );
+
+    await _pumpFinalPlan(tester, api);
+
+    // The rug renders (as a labelled underlay) and the tiny lamp still shows
+    // its label instead of collapsing to an unreadable dot.
+    expect(find.text('Rug'), findsWidgets);
+    expect(find.text('Floor lamp'), findsWidgets);
+    expect(find.text('Sofa'), findsWidgets);
+  });
+
   testWidgets('Final Plan warns when floor plan has only a wall', (
     tester,
   ) async {
