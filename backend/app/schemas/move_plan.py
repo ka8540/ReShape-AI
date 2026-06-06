@@ -14,8 +14,10 @@ class MovePlanFloorItem(BaseModel):
     category: str
     x: float = Field(..., ge=0, le=100)
     y: float = Field(..., ge=0, le=100)
-    width: float = Field(..., gt=0, le=100)
-    height: float = Field(..., gt=0, le=100)
+    # Accept 0 here; the service clamps to a visually usable minimum so a weak
+    # model response never produces an invisible (zero-area) box.
+    width: float = Field(..., ge=0, le=100)
+    height: float = Field(..., ge=0, le=100)
     rotation: float = 0
     status: PlanItemStatus = "unchanged"
     fixed: bool = False

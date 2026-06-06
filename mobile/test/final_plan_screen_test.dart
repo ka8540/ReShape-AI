@@ -149,6 +149,120 @@ String _planJson({
   });
 }
 
+/// A realistic multi-item plan: furniture boxes plus a full-room wall and a
+/// window, mirroring what the backend actually returns.
+String _multiItemPlanJson() {
+  return jsonEncode({
+    'room_summary': 'Approximate living-room layout.',
+    'floor_plan': {
+      'width': 100,
+      'height': 100,
+      'items': [
+        {
+          'item_id': 'i-sofa',
+          'name': 'Sofa',
+          'category': 'sofa',
+          'x': 20,
+          'y': 60,
+          'width': 40,
+          'height': 18,
+          'rotation': 0,
+          'status': 'moved',
+          'fixed': false,
+        },
+        {
+          'item_id': 'i-rug',
+          'name': 'Rug',
+          'category': 'rug',
+          'x': 30,
+          'y': 40,
+          'width': 35,
+          'height': 25,
+          'rotation': 0,
+          'status': 'unchanged',
+          'fixed': false,
+        },
+        {
+          'item_id': 'i-window',
+          'name': 'Window',
+          'category': 'window',
+          'x': 20,
+          'y': 0,
+          'width': 60,
+          'height': 8,
+          'rotation': 0,
+          'status': 'structural',
+          'fixed': true,
+        },
+        {
+          'item_id': 'i-wall',
+          'name': 'Wall',
+          'category': 'wall',
+          'x': 0,
+          'y': 0,
+          'width': 100,
+          'height': 100,
+          'rotation': 0,
+          'status': 'structural',
+          'fixed': true,
+        },
+      ],
+    },
+    'moved_items': [
+      {
+        'item_id': 'i-sofa',
+        'name': 'Sofa',
+        'from': 'left wall',
+        'to': 'window wall',
+        'reason': 'opens a clearer walkway',
+      },
+    ],
+    'fixed_items': [
+      {'item_id': 'i-window', 'name': 'Window', 'reason': 'structural item'},
+    ],
+    'checklist': [
+      {'step': 1, 'title': 'Move the Sofa', 'details': 'Clear the path first.'},
+    ],
+  });
+}
+
+/// A degenerate plan that only contains a wall while furniture was moved —
+/// the renderer must warn instead of showing an empty card.
+String _wallOnlyPlanJson() {
+  return jsonEncode({
+    'room_summary': 'Incomplete layout.',
+    'floor_plan': {
+      'width': 100,
+      'height': 100,
+      'items': [
+        {
+          'item_id': 'i-wall',
+          'name': 'Wall',
+          'category': 'wall',
+          'x': 0,
+          'y': 0,
+          'width': 100,
+          'height': 100,
+          'rotation': 0,
+          'status': 'structural',
+          'fixed': true,
+        },
+      ],
+    },
+    'moved_items': [
+      {
+        'item_id': 'i-sofa',
+        'name': 'Sofa',
+        'from': 'left wall',
+        'to': 'window wall',
+        'reason': 'opens a clearer walkway',
+      },
+    ],
+    'fixed_items': [],
+    'checklist': [],
+  });
+}
+
 class _FakeFinalPlanApi extends ApiService {
   _FakeFinalPlanApi({
     this.designs = const [],
@@ -521,6 +635,85 @@ void main() {
     await tester.pump();
 
     expect(find.text('Export is not available yet.'), findsOneWidget);
+  });
+
+  testWidgets('Final Plan renders multiple floor-plan items from backend', (
+    tester,
+  ) async {
+    final planJson = _multiItemPlanJson();
+    final api = _FakeFinalPlanApi(
+      designs: [_designRow('d1', selected: true)],
+      designDetails: {
+        'd1': _designDetail(
+          'd1',
+          outputUrl: 'https://cdn.example.com/generated.png',
+          planJson: planJson,
+          planStatus: 'succeeded',
+        ),
+      },
+      items: [
+        _itemRow('i-sofa', 'Sofa', 'sofa'),
+        _itemRow('i-rug', 'Rug', 'rug'),
+      ],
+      finalPlan: _savedPlan(planJson: planJson),
+    );
+
+    await _pumpFinalPlan(tester, api);
+
+    // Multiple real furniture boxes render (Detected list + floor box = many).
+    expect(find.text('Sofa'), findsWidgets);
+    expect(find.text('Rug'), findsWidgets);
+  });
+
+  testWidgets('Final Plan does not render a full-room Wall as a box', (
+    tester,
+  ) async {
+    final planJson = _multiItemPlanJson();
+    final api = _FakeFinalPlanApi(
+      designs: [_designRow('d1', selected: true)],
+      designDetails: {
+        'd1': _designDetail(
+          'd1',
+          outputUrl: 'https://cdn.example.com/generated.png',
+          planJson: planJson,
+          planStatus: 'succeeded',
+        ),
+      },
+      finalPlan: _savedPlan(planJson: planJson),
+    );
+
+    await _pumpFinalPlan(tester, api);
+
+    // The structural wall must not be drawn as a labelled box covering the card.
+    expect(find.text('Wall'), findsNothing);
+    // Furniture is still visible (not hidden behind a wall block).
+    expect(find.text('Sofa'), findsWidgets);
+  });
+
+  testWidgets('Final Plan warns when floor plan has only a wall', (
+    tester,
+  ) async {
+    final planJson = _wallOnlyPlanJson();
+    final api = _FakeFinalPlanApi(
+      designs: [_designRow('d1', selected: true)],
+      designDetails: {
+        'd1': _designDetail(
+          'd1',
+          outputUrl: 'https://cdn.example.com/generated.png',
+          planJson: planJson,
+          planStatus: 'succeeded',
+        ),
+      },
+      finalPlan: _savedPlan(planJson: planJson),
+    );
+
+    await _pumpFinalPlan(tester, api);
+
+    expect(
+      find.text('Floor plan data is incomplete. Regenerate the layout.'),
+      findsOneWidget,
+    );
+    expect(find.text('Wall'), findsNothing);
   });
 
   testWidgets('mock data only appears when USE_MOCK_DATA=true', (tester) async {

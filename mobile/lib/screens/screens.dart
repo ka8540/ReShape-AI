@@ -4584,6 +4584,11 @@ class _FinalPlanRealBody extends StatelessWidget {
           )
         else if (floorPlan == null || floorPlan.items.isEmpty)
           const RsNotice(text: 'Structured move plan is not available yet.')
+        else if (!floorPlan.hasFurniture && movedItems.isNotEmpty)
+          const RsNotice(
+            text: 'Floor plan data is incomplete. Regenerate the layout.',
+            warn: true,
+          )
         else
           RsCard(
             clip: Clip.antiAlias,
@@ -4773,20 +4778,37 @@ class _GeneratedFloorPlanView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Walls are the room boundary (drawn by the grid painter), never a filled
+    // box on top of the furniture. Windows/doors render as edge markers.
+    // Furniture renders as boxes, structural/fixed behind movable ones so a
+    // moved piece is never hidden.
+    final windowsDoors = plan.items
+        .where((i) => i.isWindow || i.isDoor)
+        .toList();
+    final furniture = plan.items.where((i) => !i.isStructuralShell).toList()
+      ..sort((a, b) {
+        int rank(_GeneratedFloorItem i) => i.isMoved ? 2 : (i.fixed ? 0 : 1);
+        return rank(a).compareTo(rank(b));
+      });
+
     return AspectRatio(
       aspectRatio: plan.width / plan.height,
       child: CustomPaint(
         painter: _GeneratedFloorGridPainter(),
         child: LayoutBuilder(
           builder: (context, constraints) {
+            final w = constraints.maxWidth;
+            final h = constraints.maxHeight;
             return Stack(
               children: [
-                for (final item in plan.items)
+                for (final item in windowsDoors)
+                  _GeneratedFloorEdgeMarker(item: item, areaW: w, areaH: h),
+                for (final item in furniture)
                   Positioned(
-                    left: constraints.maxWidth * (item.x / 100),
-                    top: constraints.maxHeight * (item.y / 100),
-                    width: constraints.maxWidth * (item.width / 100),
-                    height: constraints.maxHeight * (item.height / 100),
+                    left: w * (item.x / 100),
+                    top: h * (item.y / 100),
+                    width: w * (item.width / 100),
+                    height: h * (item.height / 100),
                     child: _GeneratedFloorPlanItem(item: item),
                   ),
               ],
@@ -4794,6 +4816,83 @@ class _GeneratedFloorPlanView extends StatelessWidget {
           },
         ),
       ),
+    );
+  }
+}
+
+/// A window or door drawn as a thick line snapped to the nearest room edge,
+/// with a small label — never a furniture box in the middle of the room.
+class _GeneratedFloorEdgeMarker extends StatelessWidget {
+  const _GeneratedFloorEdgeMarker({
+    required this.item,
+    required this.areaW,
+    required this.areaH,
+  });
+
+  final _GeneratedFloorItem item;
+  final double areaW;
+  final double areaH;
+
+  @override
+  Widget build(BuildContext context) {
+    final centerX = item.x + item.width / 2;
+    final centerY = item.y + item.height / 2;
+    // Distance from each edge picks the wall this marker sits against.
+    final distances = <String, double>{
+      'top': centerY,
+      'bottom': 100 - centerY,
+      'left': centerX,
+      'right': 100 - centerX,
+    };
+    final edge = distances.entries
+        .reduce((a, b) => a.value <= b.value ? a : b)
+        .key;
+    final horizontal = edge == 'top' || edge == 'bottom';
+    final color = item.isDoor ? AppColors.warm : AppColors.teal;
+    const thickness = 5.0;
+
+    final span = horizontal ? item.width : item.height;
+    final start = horizontal ? item.x : item.y;
+    final line = Container(
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(99),
+      ),
+    );
+    final label = Text(
+      item.name,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: AppText.xs(color: color, weight: FontWeight.w800),
+    );
+
+    if (horizontal) {
+      final top = edge == 'top' ? 2.0 : areaH - thickness - 2;
+      return Positioned(
+        left: areaW * (start / 100),
+        top: top,
+        width: areaW * (span / 100),
+        height: thickness,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Positioned.fill(child: line),
+            Positioned(
+              left: 0,
+              top: edge == 'top' ? thickness + 1 : -14,
+              child: label,
+            ),
+          ],
+        ),
+      );
+    }
+    final left = edge == 'left' ? 2.0 : areaW - thickness - 2;
+    return Positioned(
+      left: left,
+      top: areaH * (start / 100),
+      width: thickness,
+      height: areaH * (span / 100),
+      child: line,
     );
   }
 }
@@ -4834,18 +4933,25 @@ class _GeneratedFloorPlanItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final structural = item.status == 'structural' || item.fixed;
-    final moved = item.status == 'moved';
-    final border = structural
-        ? AppColors.ink3
-        : moved
-        ? AppColors.teal
-        : AppColors.warm;
-    final fill = structural
-        ? AppColors.surface3
-        : moved
-        ? AppColors.tealTint
-        : AppColors.warnTint;
+    final structural = item.isStructural;
+    final moved = item.isMoved;
+    // moved -> teal, fixed (kept in place) -> warm accent, structural -> muted
+    // gray, everything else (unchanged) -> neutral.
+    final Color border;
+    final Color fill;
+    if (moved) {
+      border = AppColors.teal;
+      fill = AppColors.tealTint;
+    } else if (item.fixed) {
+      border = AppColors.warm;
+      fill = AppColors.warnTint;
+    } else if (structural) {
+      border = AppColors.ink3;
+      fill = AppColors.surface3;
+    } else {
+      border = AppColors.border2;
+      fill = AppColors.surface;
+    }
     return Transform.rotate(
       angle: item.rotation * 3.141592653589793 / 180,
       child: Container(
@@ -4994,6 +5100,10 @@ class _GeneratedFloorPlan {
   final double height;
   final List<_GeneratedFloorItem> items;
 
+  /// True when the plan has at least one movable/furniture box (not just the
+  /// room shell of walls/windows/doors).
+  bool get hasFurniture => items.any((i) => !i.isStructuralShell);
+
   static _GeneratedFloorPlan? fromMap(Map<dynamic, dynamic> map) {
     final itemsRaw = map['items'];
     final items = itemsRaw is Iterable
@@ -5014,6 +5124,7 @@ class _GeneratedFloorPlan {
 class _GeneratedFloorItem {
   const _GeneratedFloorItem({
     required this.name,
+    required this.category,
     required this.x,
     required this.y,
     required this.width,
@@ -5024,6 +5135,7 @@ class _GeneratedFloorItem {
   });
 
   final String name;
+  final String category;
   final double x;
   final double y;
   final double width;
@@ -5032,15 +5144,30 @@ class _GeneratedFloorItem {
   final String status;
   final bool fixed;
 
+  /// Walls, windows and doors describe the room shell, not a movable piece of
+  /// furniture, so they render as edges/boundaries rather than filled boxes.
+  bool get isWall => category == 'wall';
+  bool get isWindow => category == 'window';
+  bool get isDoor => category == 'door';
+  bool get isStructuralShell => isWall || isWindow || isDoor;
+  bool get isMoved => status == 'moved';
+  bool get isStructural => status == 'structural' || isStructuralShell;
+
   static _GeneratedFloorItem? fromMap(Map<dynamic, dynamic> map) {
     final name = _nonBlank(map['name']);
     if (name == null) return null;
+    final width = _numOr(map['width'], 8).clamp(4, 100).toDouble();
+    final height = _numOr(map['height'], 8).clamp(3, 100).toDouble();
+    // Keep boxes inside the room: x + width <= 100, y + height <= 100.
+    final x = _numOr(map['x'], 0).clamp(0, 100 - width).toDouble();
+    final y = _numOr(map['y'], 0).clamp(0, 100 - height).toDouble();
     return _GeneratedFloorItem(
       name: name,
-      x: _numOr(map['x'], 0).clamp(0, 100).toDouble(),
-      y: _numOr(map['y'], 0).clamp(0, 100).toDouble(),
-      width: _numOr(map['width'], 8).clamp(1, 100).toDouble(),
-      height: _numOr(map['height'], 8).clamp(1, 100).toDouble(),
+      category: (_nonBlank(map['category']) ?? '').toLowerCase(),
+      x: x,
+      y: y,
+      width: width,
+      height: height,
       rotation: _numOr(map['rotation'], 0),
       status: _nonBlank(map['status']) ?? 'unchanged',
       fixed: map['fixed'] == true,

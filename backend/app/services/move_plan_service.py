@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 from pydantic import ValidationError
 
@@ -18,6 +19,15 @@ from app.schemas.move_plan import (
 FAILED_STATUS = "failed"
 SUCCEEDED_STATUS = "succeeded"
 PENDING_STATUS = "pending"
+
+# Boxes smaller than this are invisible on a phone; clamp every floor item up to
+# a usable minimum and keep it inside the room (x + width <= 100, y + height <= 100).
+FLOOR_MIN_WIDTH = 4.0
+FLOOR_MIN_HEIGHT = 3.0
+
+# Categories that describe the room shell rather than a movable piece of
+# furniture. The client renders these as edges/boundaries, not furniture boxes.
+STRUCTURAL_CATEGORIES = {"wall", "window", "door"}
 
 
 def build_prompt(project: Project, design: GeneratedDesign) -> str:
@@ -55,9 +65,25 @@ def build_prompt(project: Project, design: GeneratedDesign) -> str:
         '  "checklist": [{"step": 1, "title": "Action", "details": "Practical detail"}]\n'
         "}\n\n"
         "Hard rules:\n"
+        "- Return valid JSON only, no markdown.\n"
         "- Only include items from this detected_items array. Do not invent furniture.\n"
-        "- Structural or fixed items must not appear in moved_items and must not have status=moved.\n"
-        "- Coordinates are normalized percentages from 0 to 100.\n"
+        "- floor_plan.items MUST include EVERY movable detected item, plus any "
+        "structural items (window, door, wall) that are present.\n"
+        "- Never return a floor plan that contains only a wall. If there is "
+        "furniture, the furniture must be in floor_plan.items.\n"
+        "- Structural or fixed items must not appear in moved_items and must not "
+        "have status=moved. Keep fixed/structural items where they are.\n"
+        "- Mark moved furniture with status \"moved\"; mark walls, windows and "
+        "doors with status \"structural\".\n"
+        "- Coordinates are normalized percentages from 0 to 100, where x and y are "
+        "the TOP-LEFT corner of the box.\n"
+        "- Give every furniture box a usable size (width >= 4, height >= 3) and keep "
+        "x + width <= 100 and y + height <= 100.\n"
+        "- Produce an approximate but useful top-down layout: do NOT stack every "
+        "item in the center, and keep boxes visually separated.\n"
+        "- Place window and door along the room edges (near x=0, x=100, y=0 or "
+        "y=100), not in the middle. Represent a wall as the room boundary "
+        "(x=0, y=0, width=100, height=100), not a small centered block.\n"
         "- Checklist steps must be specific to the moved items and selected design.\n"
         "- If geometry is approximate, say so in room_summary.\n\n"
         f"project_id: {project.id}\n"
@@ -82,6 +108,13 @@ def normalize_plan(raw_text: str, items: list[DetectedItem]) -> str:
         _normalize_moved_item(item, by_id, by_name)
         for item in plan.moved_items
     ]
+    moved_ids = {m.item_id for m in normalized_moved if m.item_id}
+    # Repair: guarantee every movable detected item (especially anything in
+    # moved_items) is present in the floor plan, even if the model omitted it or
+    # returned a wall-only layout. Missing items get deterministic grid positions.
+    normalized_floor_items = _repair_floor_items(
+        normalized_floor_items, items, moved_ids
+    )
     fixed_reason_by_id = {
         resolved.id: fixed.reason
         for fixed in plan.fixed_items
@@ -177,6 +210,9 @@ def _normalize_floor_item(
     if fixed and plan_item.status == "moved":
         raise ValueError(f"Fixed item cannot be marked moved: {item.name}")
     status = "structural" if item.structural else "fixed" if item.fixed else plan_item.status
+    x, y, width, height = _clamp_box(
+        plan_item.x, plan_item.y, plan_item.width, plan_item.height
+    )
     return plan_item.model_copy(
         update={
             "item_id": item.id,
@@ -184,8 +220,80 @@ def _normalize_floor_item(
             "category": item.type,
             "status": status,
             "fixed": fixed,
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
         }
     )
+
+
+def _clamp_box(
+    x: float, y: float, width: float, height: float
+) -> tuple[float, float, float, float]:
+    """Force a normalized box to a visible size that stays inside the room."""
+    width = min(max(width, FLOOR_MIN_WIDTH), 100.0)
+    height = min(max(height, FLOOR_MIN_HEIGHT), 100.0)
+    x = min(max(x, 0.0), 100.0 - width)
+    y = min(max(y, 0.0), 100.0 - height)
+    return x, y, width, height
+
+
+def _repair_floor_items(
+    floor_items: list[MovePlanFloorItem],
+    items: list[DetectedItem],
+    moved_ids: set[str],
+) -> list[MovePlanFloorItem]:
+    """Append any movable detected item the model left out of the floor plan,
+    laying the missing items out on a simple grid so they render usefully.
+
+    This is a deterministic local/dev repair, not invented data: every appended
+    box corresponds to a real detected item the project already owns.
+    """
+    present_ids = {fi.item_id for fi in floor_items if fi.item_id}
+    present_names = {fi.name.strip().lower() for fi in floor_items}
+    missing = [
+        item
+        for item in items
+        if not (item.fixed or item.structural)
+        and item.id not in present_ids
+        and item.name.strip().lower() not in present_names
+    ]
+    if not missing:
+        return floor_items
+
+    cols = max(1, math.ceil(math.sqrt(len(missing))))
+    rows = max(1, math.ceil(len(missing) / cols))
+    margin = 8.0
+    cell_w = (100.0 - 2 * margin) / cols
+    cell_h = (100.0 - 2 * margin) / rows
+    box_w = max(FLOOR_MIN_WIDTH, cell_w * 0.7)
+    box_h = max(FLOOR_MIN_HEIGHT, cell_h * 0.7)
+
+    repaired = list(floor_items)
+    for index, item in enumerate(missing):
+        col = index % cols
+        row = index // cols
+        center_x = margin + cell_w * (col + 0.5)
+        center_y = margin + cell_h * (row + 0.5)
+        x, y, width, height = _clamp_box(
+            center_x - box_w / 2, center_y - box_h / 2, box_w, box_h
+        )
+        repaired.append(
+            MovePlanFloorItem(
+                item_id=item.id,
+                name=item.name,
+                category=item.type,
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+                rotation=0,
+                status="moved" if item.id in moved_ids else "unchanged",
+                fixed=False,
+            )
+        )
+    return repaired
 
 
 def _normalize_moved_item(
